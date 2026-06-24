@@ -1,0 +1,40 @@
+# Build outputs
+mini_rtos
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.elf
+*.map
+*.bin
+*.hex
+
+# Generated dependency files
+*.d
+
+# Debug and coverage artifacts
+*.gcda
+*.gcno
+*.gcov
+coverage/
+
+# CMake and common build directories
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+compile_commands.json
+
+# Editor and OS files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
