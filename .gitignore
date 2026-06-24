@@ -1,5 +1,6 @@
 # Build outputs
 mini_rtos
+test_states
 *.o
 *.obj
 *.a

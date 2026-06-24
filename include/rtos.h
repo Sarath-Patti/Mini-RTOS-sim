@@ -10,7 +10,8 @@
 typedef enum {
     TASK_READY,
     TASK_RUNNING,
-    TASK_BLOCKED
+    TASK_BLOCKED,
+    TASK_SUSPENDED
 } TaskState;
 
 typedef enum {
@@ -58,6 +59,10 @@ void rtos_init(void);
 int rtos_create_task(const char *name, int priority, void (*task_function)(void));
 void rtos_run(int max_ticks);
 void rtos_task_sleep(int ticks);
+bool rtos_suspend_task(int task_id);
+bool rtos_resume_task(int task_id);
+TaskState rtos_get_task_state(int task_id);
+int rtos_ready_count(void);
 
 bool rtos_sem_wait(Semaphore *sem);
 void rtos_sem_signal(Semaphore *sem);

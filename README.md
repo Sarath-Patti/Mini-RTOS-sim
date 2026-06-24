@@ -5,6 +5,8 @@ This is a PC-based Mini RTOS simulator written in C. It is meant to be built fir
 ## Features
 
 - Task Control Blocks with task id, priority, state, and simulated context
+- READY, RUNNING, BLOCKED, and SUSPENDED task states
+- Static ready queue containing only READY tasks
 - Priority-based cooperative scheduler
 - Simulated context switch logs with `pc` and `sp`
 - Counting semaphore
@@ -18,6 +20,14 @@ This is a PC-based Mini RTOS simulator written in C. It is meant to be built fir
 make
 make run
 ```
+
+## Test
+
+```sh
+make test
+```
+
+The v1.1 tests verify READY task execution, BLOCKED task skipping, SUSPENDED task skipping, and multiple READY tasks in the ready queue.
 
 ## Example Output
 
@@ -36,6 +46,7 @@ make run
 include/rtos.h   Public kernel API and data structures
 src/rtos.c       Scheduler, sync primitives, message queue, logging
 src/main.c       Demo application using sensor/logger/display tasks
+tests/           Focused simulator behavior tests
 Makefile         Build commands
 ```
 
