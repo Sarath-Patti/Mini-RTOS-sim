@@ -7,6 +7,7 @@ This is a PC-based Mini RTOS simulator written in C. It is meant to be built fir
 - Task Control Blocks with task id, priority, state, and private stack metadata
 - READY, RUNNING, BLOCKED, and SUSPENDED task states
 - Fixed-size per-task stacks configured by `RTOS_STACK_SIZE`
+- Cortex-M-style CPU context model with R0-R12, LR, PC, and xPSR
 - Static ready queue containing only READY tasks
 - Scheduler module separated from kernel services
 - Priority-based cooperative scheduler
@@ -29,7 +30,35 @@ make run
 make test
 ```
 
-The tests verify READY task execution, BLOCKED task skipping, SUSPENDED task skipping, multiple READY tasks in the ready queue, and private task stack layout.
+The tests verify READY task execution, BLOCKED task skipping, SUSPENDED task skipping, multiple READY tasks in the ready queue, private task stack layout, and simulated CPU context save/restore behavior.
+
+## Architecture
+
+```text
+Task Function
+     |
+     v
+Task Control Block
+     |
+     +--> Task metadata
+     |    task id, priority, state
+     |
+     +--> Stack
+     |    stack memory, stack size, stack pointer
+     |
+     +--> CPUContext
+          R0-R12, LR, PC, xPSR
+
+Scheduler
+     |
+     +--> context_save(current task)
+     |
+     +--> select next READY task
+     |
+     +--> context_restore(next task)
+     |
+     +--> run task function cooperatively
+```
 
 ## Memory Layout
 
@@ -77,13 +106,15 @@ stack_memory[0]  ...  stack_memory[N - 1]  initial SP
 ## Project Map
 
 ```text
-include/rtos.h   Public kernel API and data structures
+include/context.h    Internal CPU context model API
+include/rtos.h       Public kernel API and data structures
 include/scheduler.h  Internal scheduler module API
-src/rtos.c       Task lifecycle, sync primitives, message queue, logging
-src/scheduler.c  Ready queue, priority selection, and task dispatch
-src/main.c       Demo application using sensor/logger/display tasks
-tests/           Focused simulator behavior tests
-Makefile         Build commands
+src/context.c        Simulated context save/restore/copy
+src/rtos.c           Task lifecycle, sync primitives, message queue, logging
+src/scheduler.c      Ready queue, priority selection, and task dispatch
+src/main.c           Demo application using sensor/logger/display tasks
+tests/               Focused simulator behavior tests
+Makefile             Build commands
 ```
 
 ## Suggested Next Milestones

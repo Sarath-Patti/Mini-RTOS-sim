@@ -1,3 +1,4 @@
+#include "context.h"
 #include "rtos.h"
 
 #include <assert.h>
@@ -9,6 +10,7 @@ static int blocked_runs;
 static int fallback_runs;
 static int suspended_runs;
 static int queue_runs[3];
+static CPUContext *context_runs[3];
 
 static void ready_task(void)
 {
@@ -46,6 +48,21 @@ static void queue_task_2(void)
     queue_runs[2]++;
 }
 
+static void context_task_0(void)
+{
+    context_runs[0] = &rtos_current_task()->context;
+}
+
+static void context_task_1(void)
+{
+    context_runs[1] = &rtos_current_task()->context;
+}
+
+static void context_task_2(void)
+{
+    context_runs[2] = &rtos_current_task()->context;
+}
+
 static void reset_counters(void)
 {
     ready_runs = 0;
@@ -55,6 +72,9 @@ static void reset_counters(void)
     queue_runs[0] = 0;
     queue_runs[1] = 0;
     queue_runs[2] = 0;
+    context_runs[0] = NULL;
+    context_runs[1] = NULL;
+    context_runs[2] = NULL;
 }
 
 static void test_ready_task_execution(void)
@@ -200,6 +220,106 @@ static void test_task_stack_allocation(void)
     puts("PASS: private task stack allocation");
 }
 
+static void test_task_context_ownership(void)
+{
+    reset_counters();
+    rtos_init();
+
+    assert(rtos_create_task("Context Task 0", 1, context_task_0) > 0);
+    assert(rtos_create_task("Context Task 1", 1, context_task_1) > 0);
+    assert(rtos_create_task("Context Task 2", 1, context_task_2) > 0);
+
+    rtos_run(3);
+
+    assert(context_runs[0] != NULL);
+    assert(context_runs[1] != NULL);
+    assert(context_runs[2] != NULL);
+    assert(context_runs[0] != context_runs[1]);
+    assert(context_runs[0] != context_runs[2]);
+    assert(context_runs[1] != context_runs[2]);
+
+    puts("PASS: private task CPU context ownership");
+}
+
+static void test_context_save_updates_destination(void)
+{
+    CPUContext active_seed;
+    CPUContext task_a_context;
+    CPUContext task_b_context;
+
+    context_init(&active_seed, ready_task);
+    context_init(&task_a_context, queue_task_0);
+    context_init(&task_b_context, queue_task_1);
+
+    active_seed.r0 = 0x11u;
+    active_seed.r7 = 0x77u;
+    active_seed.r12 = 0xCCu;
+    active_seed.lr = 0xABCD1234u;
+
+    task_b_context.r0 = 0x2222u;
+
+    context_restore(&active_seed);
+    context_save(&task_a_context);
+
+    assert(task_a_context.r0 == 0x11u);
+    assert(task_a_context.r7 == 0x77u);
+    assert(task_a_context.r12 == 0xCCu);
+    assert(task_a_context.lr == 0xABCD1234u);
+    assert(task_b_context.r0 == 0x2222u);
+
+    puts("PASS: context save updates only destination");
+}
+
+static void test_context_restore_expected_registers(void)
+{
+    CPUContext expected;
+    const CPUContext *active;
+
+    context_init(&expected, blocking_task);
+    expected.r0 = 1u;
+    expected.r1 = 2u;
+    expected.r2 = 3u;
+    expected.r12 = 12u;
+    expected.lr = 0xFFFFFFFDu;
+    expected.xpsr = 0x01000000u;
+
+    context_restore(&expected);
+    active = context_active();
+
+    assert(active->r0 == expected.r0);
+    assert(active->r1 == expected.r1);
+    assert(active->r2 == expected.r2);
+    assert(active->r12 == expected.r12);
+    assert(active->lr == expected.lr);
+    assert(active->pc == expected.pc);
+    assert(active->xpsr == expected.xpsr);
+
+    puts("PASS: context restore loads expected registers");
+}
+
+static void test_contexts_do_not_overwrite(void)
+{
+    CPUContext context_a;
+    CPUContext context_b;
+
+    context_init(&context_a, queue_task_0);
+    context_init(&context_b, queue_task_1);
+
+    context_a.r4 = 0xA4u;
+    context_b.r4 = 0xB4u;
+
+    context_restore(&context_a);
+    context_save(&context_a);
+    context_restore(&context_b);
+    context_save(&context_b);
+
+    assert(context_a.r4 == 0xA4u);
+    assert(context_b.r4 == 0xB4u);
+    assert(context_a.pc != context_b.pc);
+
+    puts("PASS: CPU contexts do not overwrite one another");
+}
+
 int main(void)
 {
     test_ready_task_execution();
@@ -207,7 +327,11 @@ int main(void)
     test_suspended_task_skipping();
     test_multiple_ready_tasks_in_queue();
     test_task_stack_allocation();
+    test_task_context_ownership();
+    test_context_save_updates_destination();
+    test_context_restore_expected_registers();
+    test_contexts_do_not_overwrite();
 
-    puts("All task state and stack tests passed");
+    puts("All task state, stack, and context tests passed");
     return 0;
 }

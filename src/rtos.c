@@ -1,4 +1,5 @@
 #include "rtos.h"
+#include "context.h"
 #include "scheduler.h"
 
 #include <stdarg.h>
@@ -50,6 +51,7 @@ int rtos_create_task(const char *name, int priority, void (*task_function)(void)
     task->block_reason = BLOCK_NONE;
     task->sleep_ticks = 0;
     init_task_stack(task);
+    context_init(&task->context, task_function);
     task->task_function = task_function;
     task->name = name;
 

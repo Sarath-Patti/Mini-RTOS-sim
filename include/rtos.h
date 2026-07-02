@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "context.h"
+
 #define RTOS_MAX_TASKS 8
 #define RTOS_QUEUE_SIZE 10
 #define RTOS_STACK_SIZE 256u
@@ -38,6 +40,7 @@ typedef struct {
     RtosStackWord stack_memory[RTOS_STACK_WORDS];
     size_t stack_size;
     RtosStackWord *stack_pointer;
+    CPUContext context;
     void (*task_function)(void);
     const char *name;
 } TCB;

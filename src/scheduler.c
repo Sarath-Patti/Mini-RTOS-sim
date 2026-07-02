@@ -1,3 +1,4 @@
+#include "context.h"
 #include "scheduler.h"
 
 static TCB *task_list;
@@ -133,9 +134,20 @@ void scheduler_run(int max_ticks)
     for (int tick = 0; tick < max_ticks; tick++) {
         int next;
         TCB *task;
+        TCB *current_task;
 
         system_tick++;
         update_sleeping_tasks();
+
+        current_task = NULL;
+        if (current_task_index != 0 &&
+            *current_task_index >= 0 &&
+            *current_task_index < *task_count) {
+            current_task = &task_list[*current_task_index];
+            uart_log("Current task: %s", current_task->name);
+            context_save(&current_task->context);
+            uart_log("Context Saved: %s", current_task->name);
+        }
 
         next = pick_next_task();
         if (next < 0) {
@@ -145,9 +157,13 @@ void scheduler_run(int max_ticks)
 
         *current_task_index = next;
         task = &task_list[next];
+        uart_log("Next task: %s", task->name);
+        context_restore(&task->context);
+        uart_log("Context Restored: %s", task->name);
+
         scheduler_set_task_state(next, TASK_RUNNING, BLOCK_NONE);
 
-        uart_log("Task Switched: %s sp=%p ready=%d",
+        uart_log("Task Running: %s sp=%p ready=%d",
                  task->name, (void *)task->stack_pointer, ready_count);
         task->task_function();
 
