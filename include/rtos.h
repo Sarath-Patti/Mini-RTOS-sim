@@ -3,9 +3,15 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define RTOS_MAX_TASKS 8
 #define RTOS_QUEUE_SIZE 10
+#define RTOS_STACK_SIZE 256u
+
+typedef uintptr_t RtosStackWord;
+
+#define RTOS_STACK_WORDS (RTOS_STACK_SIZE / sizeof(RtosStackWord))
 
 typedef enum {
     TASK_READY,
@@ -24,17 +30,14 @@ typedef enum {
 } BlockReason;
 
 typedef struct {
-    int pc;
-    int sp;
-} Context;
-
-typedef struct {
     int task_id;
     int priority;
     TaskState state;
     BlockReason block_reason;
     int sleep_ticks;
-    Context context;
+    RtosStackWord stack_memory[RTOS_STACK_WORDS];
+    size_t stack_size;
+    RtosStackWord *stack_pointer;
     void (*task_function)(void);
     const char *name;
 } TCB;
@@ -63,6 +66,9 @@ bool rtos_suspend_task(int task_id);
 bool rtos_resume_task(int task_id);
 TaskState rtos_get_task_state(int task_id);
 int rtos_ready_count(void);
+const RtosStackWord *rtos_get_task_stack_base(int task_id);
+const RtosStackWord *rtos_get_task_stack_pointer(int task_id);
+size_t rtos_get_task_stack_size(int task_id);
 
 bool rtos_sem_wait(Semaphore *sem);
 void rtos_sem_signal(Semaphore *sem);

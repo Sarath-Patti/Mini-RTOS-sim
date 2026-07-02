@@ -1,6 +1,7 @@
 #include "rtos.h"
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 
 static int ready_runs;
@@ -127,13 +128,86 @@ static void test_multiple_ready_tasks_in_queue(void)
     puts("PASS: multiple READY tasks in queue");
 }
 
+static bool ranges_overlap(uintptr_t start_a, uintptr_t end_a, uintptr_t start_b, uintptr_t end_b)
+{
+    return start_a < end_b && start_b < end_a;
+}
+
+static void test_task_stack_allocation(void)
+{
+    int task_a;
+    int task_b;
+    int task_c;
+    const RtosStackWord *base_a;
+    const RtosStackWord *base_b;
+    const RtosStackWord *base_c;
+    const RtosStackWord *sp_a;
+    const RtosStackWord *sp_b;
+    const RtosStackWord *sp_c;
+    size_t stack_words;
+    uintptr_t start_a;
+    uintptr_t end_a;
+    uintptr_t start_b;
+    uintptr_t end_b;
+    uintptr_t start_c;
+    uintptr_t end_c;
+
+    reset_counters();
+    rtos_init();
+
+    task_a = rtos_create_task("Stack Task A", 1, ready_task);
+    task_b = rtos_create_task("Stack Task B", 1, ready_task);
+    task_c = rtos_create_task("Stack Task C", 1, ready_task);
+
+    assert(task_a > 0);
+    assert(task_b > 0);
+    assert(task_c > 0);
+
+    base_a = rtos_get_task_stack_base(task_a);
+    base_b = rtos_get_task_stack_base(task_b);
+    base_c = rtos_get_task_stack_base(task_c);
+    sp_a = rtos_get_task_stack_pointer(task_a);
+    sp_b = rtos_get_task_stack_pointer(task_b);
+    sp_c = rtos_get_task_stack_pointer(task_c);
+    stack_words = RTOS_STACK_SIZE / sizeof(RtosStackWord);
+
+    assert(base_a != NULL);
+    assert(base_b != NULL);
+    assert(base_c != NULL);
+    assert(base_a != base_b);
+    assert(base_b != base_c);
+    assert(base_a != base_c);
+
+    assert(rtos_get_task_stack_size(task_a) == RTOS_STACK_SIZE);
+    assert(rtos_get_task_stack_size(task_b) == RTOS_STACK_SIZE);
+    assert(rtos_get_task_stack_size(task_c) == RTOS_STACK_SIZE);
+
+    assert(sp_a == base_a + stack_words);
+    assert(sp_b == base_b + stack_words);
+    assert(sp_c == base_c + stack_words);
+
+    start_a = (uintptr_t)base_a;
+    end_a = start_a + rtos_get_task_stack_size(task_a);
+    start_b = (uintptr_t)base_b;
+    end_b = start_b + rtos_get_task_stack_size(task_b);
+    start_c = (uintptr_t)base_c;
+    end_c = start_c + rtos_get_task_stack_size(task_c);
+
+    assert(!ranges_overlap(start_a, end_a, start_b, end_b));
+    assert(!ranges_overlap(start_a, end_a, start_c, end_c));
+    assert(!ranges_overlap(start_b, end_b, start_c, end_c));
+
+    puts("PASS: private task stack allocation");
+}
+
 int main(void)
 {
     test_ready_task_execution();
     test_blocked_task_skipping();
     test_suspended_task_skipping();
     test_multiple_ready_tasks_in_queue();
+    test_task_stack_allocation();
 
-    puts("All v1.1 task state tests passed");
+    puts("All task state and stack tests passed");
     return 0;
 }

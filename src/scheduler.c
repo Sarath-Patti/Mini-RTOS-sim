@@ -146,10 +146,9 @@ void scheduler_run(int max_ticks)
         *current_task_index = next;
         task = &task_list[next];
         scheduler_set_task_state(next, TASK_RUNNING, BLOCK_NONE);
-        task->context.pc++;
 
-        uart_log("Task Switched: %s pc=%d sp=0x%X ready=%d",
-                 task->name, task->context.pc, task->context.sp, ready_count);
+        uart_log("Task Switched: %s sp=%p ready=%d",
+                 task->name, (void *)task->stack_pointer, ready_count);
         task->task_function();
 
         if (task->state == TASK_RUNNING) {

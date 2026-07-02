@@ -19,6 +19,16 @@ static int task_index_from_id(int task_id)
     return -1;
 }
 
+static void init_task_stack(TCB *task)
+{
+    for (size_t i = 0; i < RTOS_STACK_WORDS; i++) {
+        task->stack_memory[i] = 0;
+    }
+
+    task->stack_size = sizeof(task->stack_memory);
+    task->stack_pointer = &task->stack_memory[RTOS_STACK_WORDS];
+}
+
 void rtos_init(void)
 {
     task_count = 0;
@@ -39,8 +49,7 @@ int rtos_create_task(const char *name, int priority, void (*task_function)(void)
     task->state = TASK_SUSPENDED;
     task->block_reason = BLOCK_NONE;
     task->sleep_ticks = 0;
-    task->context.pc = 0;
-    task->context.sp = 0x1000 + (task_count * 0x100);
+    init_task_stack(task);
     task->task_function = task_function;
     task->name = name;
 
@@ -106,6 +115,39 @@ TaskState rtos_get_task_state(int task_id)
 int rtos_ready_count(void)
 {
     return scheduler_ready_count();
+}
+
+const RtosStackWord *rtos_get_task_stack_base(int task_id)
+{
+    int task_index = task_index_from_id(task_id);
+
+    if (task_index < 0) {
+        return NULL;
+    }
+
+    return task_list[task_index].stack_memory;
+}
+
+const RtosStackWord *rtos_get_task_stack_pointer(int task_id)
+{
+    int task_index = task_index_from_id(task_id);
+
+    if (task_index < 0) {
+        return NULL;
+    }
+
+    return task_list[task_index].stack_pointer;
+}
+
+size_t rtos_get_task_stack_size(int task_id)
+{
+    int task_index = task_index_from_id(task_id);
+
+    if (task_index < 0) {
+        return 0;
+    }
+
+    return task_list[task_index].stack_size;
 }
 
 bool rtos_sem_wait(Semaphore *sem)

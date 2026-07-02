@@ -4,12 +4,13 @@ This is a PC-based Mini RTOS simulator written in C. It is meant to be built fir
 
 ## Features
 
-- Task Control Blocks with task id, priority, state, and simulated context
+- Task Control Blocks with task id, priority, state, and private stack metadata
 - READY, RUNNING, BLOCKED, and SUSPENDED task states
+- Fixed-size per-task stacks configured by `RTOS_STACK_SIZE`
 - Static ready queue containing only READY tasks
 - Scheduler module separated from kernel services
 - Priority-based cooperative scheduler
-- Simulated context switch logs with `pc` and `sp`
+- Scheduler logs with each task's current stack pointer
 - Counting semaphore
 - Mutex with owner tracking
 - Fixed-size integer message queue
@@ -28,16 +29,48 @@ make run
 make test
 ```
 
-The v1.1 tests verify READY task execution, BLOCKED task skipping, SUSPENDED task skipping, and multiple READY tasks in the ready queue.
+The tests verify READY task execution, BLOCKED task skipping, SUSPENDED task skipping, multiple READY tasks in the ready queue, and private task stack layout.
+
+## Memory Layout
+
+Each task owns a fixed stack inside its TCB. The stack pointer is initialized to the high end of that stack region to model the downward-growing stack used by Cortex-M cores.
+
+```text
+Task A TCB
++-----------------------------+
+| task id / priority / state  |
+| stack_size = RTOS_STACK_SIZE|
+| stack_pointer ------------+ |
+| stack_memory[0]           | |
+| ...                       | |
+| stack_memory[N - 1]       |<+
++-----------------------------+
+
+Task B TCB
++-----------------------------+
+| task id / priority / state  |
+| stack_size = RTOS_STACK_SIZE|
+| stack_pointer ------------+ |
+| stack_memory[0]           | |
+| ...                       | |
+| stack_memory[N - 1]       |<+
++-----------------------------+
+
+Low address                         High address
+stack_memory[0]  ...  stack_memory[N - 1]  initial SP
+      ^                                            ^
+      |                                            |
+ stack base                              stack base + size
+```
 
 ## Example Output
 
 ```text
-[00:01] Task Switched: Sensor Task pc=1 sp=0x1000
+[00:01] Task Switched: Sensor Task sp=0x1000 ready=2
 [00:01] Queue Send by Sensor Task value=100 count=1
 [00:01] Sensor Task produced sample=100
 [00:01] Semaphore Released count=1
-[00:02] Task Switched: Logger Task pc=1 sp=0x1100
+[00:02] Task Switched: Logger Task sp=0x1100 ready=1
 [00:02] Semaphore Acquired by Logger Task count=0
 ```
 
