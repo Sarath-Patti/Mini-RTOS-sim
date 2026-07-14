@@ -1,6 +1,7 @@
 #include "rtos.h"
 #include "context.h"
 #include "scheduler.h"
+#include "timer.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -269,7 +270,7 @@ void uart_log(const char *format, ...)
 {
     va_list args;
 
-    printf("[%02d:%02d] ", scheduler_tick() / 60, scheduler_tick() % 60);
+    printf("[%02d:%02d] ", (int)(timer_now() / 60), (int)(timer_now() % 60));
     va_start(args, format);
     vprintf(format, args);
     va_end(args);
