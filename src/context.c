@@ -70,3 +70,34 @@ const CPUContext *context_active(void)
 {
     return &active_context;
 }
+
+/*
+ * context_switch() — internal scheduler primitive.
+ *
+ * Performs a complete software context switch in two phases:
+ *
+ *   Phase 1 — Save outgoing:
+ *     Snapshot the current active_context into *outgoing so the
+ *     outgoing task can resume from exactly this point on its next
+ *     scheduling turn.
+ *
+ *   Phase 2 — Restore incoming:
+ *     Overwrite active_context with the register values stored in
+ *     *incoming so that the incoming task's execution environment
+ *     is in place before its task function is called.
+ *
+ * Preconditions: both pointers must be non-NULL (enforced by guard).
+ * Called exclusively from scheduler.c — not part of the public API.
+ */
+void context_switch(CPUContext *outgoing, const CPUContext *incoming)
+{
+    if (outgoing == NULL || incoming == NULL) {
+        return;
+    }
+
+    /* Phase 1: save the outgoing task's live register state */
+    context_copy(outgoing, &active_context);
+
+    /* Phase 2: load the incoming task's saved register state */
+    context_copy(&active_context, incoming);
+}

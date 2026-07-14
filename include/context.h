@@ -22,10 +22,20 @@ typedef struct {
     uint32_t xpsr;
 } CPUContext;
 
+/* Public context API */
 void context_init(CPUContext *context, void (*entry_point)(void));
 void context_save(CPUContext *destination);
 void context_restore(const CPUContext *source);
 void context_copy(CPUContext *destination, const CPUContext *source);
 const CPUContext *context_active(void);
+
+/*
+ * Internal scheduler API — do not call from outside scheduler.c.
+ *
+ * context_switch() atomically saves the CPU context of the outgoing task
+ * into *outgoing and loads the CPU context from *incoming into the active
+ * context register file.  Both pointers must be non-NULL.
+ */
+void context_switch(CPUContext *outgoing, const CPUContext *incoming);
 
 #endif

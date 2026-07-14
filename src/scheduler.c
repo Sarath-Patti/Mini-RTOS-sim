@@ -139,39 +139,89 @@ void scheduler_run(int max_ticks)
         system_tick++;
         update_sleeping_tasks();
 
+        /*
+         * Identify the currently running task so we can save its context
+         * before selecting the next task.  On the very first tick there is
+         * no current task, so current_task stays NULL and the save phase is
+         * skipped.
+         */
         current_task = NULL;
         if (current_task_index != 0 &&
             *current_task_index >= 0 &&
             *current_task_index < *task_count) {
             current_task = &task_list[*current_task_index];
-            uart_log("Current task: %s", current_task->name);
-            context_save(&current_task->context);
-            uart_log("Context Saved: %s", current_task->name);
         }
 
+        /* Select the highest-priority READY task */
         next = pick_next_task();
         if (next < 0) {
-            uart_log("Idle: no READY tasks");
+            uart_log("[Tick %d] Idle: no READY tasks", system_tick);
             continue;
         }
 
-        *current_task_index = next;
         task = &task_list[next];
-        uart_log("Next task: %s", task->name);
-        context_restore(&task->context);
-        uart_log("Context Restored: %s", task->name);
 
+        /*
+         * --- Software Context Switch sequence ---
+         *
+         * Phase 1: announce the outgoing task and save its context.
+         * Phase 2: perform the atomic context switch.
+         * Phase 3: announce the incoming task and confirm its context.
+         * Phase 4: run the task function.
+         */
+
+        /* Phase 1a — Current Task */
+        if (current_task != NULL) {
+            uart_log("[Tick %d] Current Task  : %s (state=%s)",
+                     system_tick, current_task->name,
+                     state_name(current_task->state));
+        }
+
+        /* Phase 1b — Context Saved (outgoing) + Phase 2 — Context Switch */
+        if (current_task != NULL) {
+            /*
+             * context_switch() snapshots current_task->context from
+             * active_context (save) and then loads task->context into
+             * active_context (restore) in a single call.
+             */
+            context_switch(&current_task->context, &task->context);
+            uart_log("[Tick %d] Context Saved  : %s",
+                     system_tick, current_task->name);
+        } else {
+            /*
+             * First tick — no outgoing task.  Only the incoming task's
+             * context needs to be loaded so execution begins cleanly.
+             */
+            context_restore(&task->context);
+        }
+
+        uart_log("[Tick %d] Context Switch : %s -> %s",
+                 system_tick,
+                 current_task != NULL ? current_task->name : "(none)",
+                 task->name);
+
+        /* Phase 3 — Next Task + Context Restored */
+        *current_task_index = next;
+        uart_log("[Tick %d] Next Task      : %s (priority=%d)",
+                 system_tick, task->name, task->priority);
+        uart_log("[Tick %d] Context Restored: %s (pc=0x%08X lr=0x%08X)",
+                 system_tick, task->name,
+                 context_active()->pc, context_active()->lr);
+
+        /* Phase 4 — Task Running */
         scheduler_set_task_state(next, TASK_RUNNING, BLOCK_NONE);
+        uart_log("[Tick %d] Task Running   : %s sp=%p ready=%d",
+                 system_tick, task->name,
+                 (void *)task->stack_pointer, ready_count);
 
-        uart_log("Task Running: %s sp=%p ready=%d",
-                 task->name, (void *)task->stack_pointer, ready_count);
         task->task_function();
 
         if (task->state == TASK_RUNNING) {
             scheduler_set_task_state(next, TASK_READY, BLOCK_NONE);
         }
 
-        uart_log("%s state=%s", task->name, state_name(task->state));
+        uart_log("[Tick %d] %s state=%s",
+                 system_tick, task->name, state_name(task->state));
     }
 }
 
