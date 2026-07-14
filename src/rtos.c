@@ -2,6 +2,7 @@
 #include "context.h"
 #include "scheduler.h"
 #include "timer.h"
+#include "memory.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -36,6 +37,7 @@ void rtos_init(void)
     task_count = 0;
     current_task_index = -1;
     scheduler_init(task_list, &task_count, &current_task_index);
+    memory_init();
 }
 
 int rtos_create_task(const char *name, int priority, void (*task_function)(void))

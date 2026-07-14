@@ -15,6 +15,7 @@ STM32 or ESP32.
 - **v1.5 — Software context switching** via `context_switch()`
 - **v1.6 — Dedicated timer module** for kernel tick and sleep management
 - **v1.7 — Preemptive priority scheduler** with time-slice round-robin
+- **v1.8 — Fixed-size memory pool allocator** with O(1) alloc/free and double-free protection
 - Counting semaphore
 - Mutex with owner tracking
 - Fixed-size integer message queue
@@ -72,16 +73,153 @@ Scheduler (per tick, after timer)
      |                                 outgoing and loads incoming in one call
      |
      +---> [6] Task Running          — task function is called cooperatively
+
+Memory Pool (available at any time after rtos_init)
+     |
+     +---> memory_alloc()    — pop from free list, O(1)
+     |
+     +---> memory_free()     — push to free list, O(1), double-free safe
+```
+
+## Memory Pool Architecture (v1.8)
+
+### Pool Layout
+
+The pool is a 2-D static array of `uint8_t`:
+
+```text
+g_pool_storage[RTOS_POOL_BLOCK_COUNT][RTOS_POOL_BLOCK_SIZE]
+
+  Block 0   Block 1   Block 2   ...   Block N-1
+ ┌────────┬─────────┬─────────┬─────┬──────────┐
+ │BLOCK   │ BLOCK   │ BLOCK   │     │  BLOCK   │
+ │SIZE    │ SIZE    │ SIZE    │ ... │  SIZE    │
+ │ bytes  │ bytes   │ bytes   │     │  bytes   │
+ └────────┴─────────┴─────────┴─────┴──────────┘
+
+Total pool memory = RTOS_POOL_BLOCK_SIZE × RTOS_POOL_BLOCK_COUNT bytes
+```
+
+### Embedded Free List
+
+Free blocks are chained intrinsically — the first `sizeof(int)` bytes of
+each free block store the index of the next free block.  No separate linked
+list or metadata array is needed.
+
+```text
+After memory_init():
+
+ g_free_list_head = 0
+
+  Block 0       Block 1       Block 2       Block 3
+ ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+ │ next = 1 │→ │ next = 2 │→ │ next = 3 │→ │ next = -1│ (END)
+ └──────────┘  └──────────┘  └──────────┘  └──────────┘
+
+After memory_alloc() (returns Block 0):
+
+ g_free_list_head = 1
+
+  Block 0       Block 1       Block 2       Block 3
+ ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+ │[in use]  │  │ next = 2 │→ │ next = 3 │→ │ next = -1│
+ └──────────┘  └──────────┘  └──────────┘  └──────────┘
+
+After memory_free(Block 0) (prepend back to head):
+
+ g_free_list_head = 0
+
+  Block 0       Block 1       Block 2       Block 3
+ ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+ │ next = 1 │→ │ next = 2 │→ │ next = 3 │→ │ next = -1│
+ └──────────┘  └──────────┘  └──────────┘  └──────────┘
+```
+
+### Allocation Strategy
+
+| Operation | Time Complexity | Description |
+|-----------|----------------|-------------|
+| `memory_alloc()` | O(1) | Pop head of free list; set bitmap[idx] = 1 |
+| `memory_free()` | O(1) | Validate via bitmap; push to head; set bitmap[idx] = 0 |
+| `memory_available_blocks()` | O(1) | Return pre-maintained counter |
+
+### Double-Free Protection
+
+A parallel `uint8_t g_pool_allocated[RTOS_POOL_BLOCK_COUNT]` bitmap records
+allocation state independently of the free-list links:
+
+- `g_pool_allocated[i] == 1` → block i is live.
+- `g_pool_allocated[i] == 0` → block i is free.
+
+`memory_free()` checks the bitmap before modifying the list.  If the block is
+already free, it logs an error and returns without corrupting the list.
+
+### Advantages over Dynamic Heap Allocation
+
+| Property | Heap (malloc/free) | Memory Pool |
+|----------|--------------------|-------------|
+| Allocation time | O(n) worst case (best-fit scan) | O(1) always |
+| Deallocation time | O(n) worst case (coalesce) | O(1) always |
+| Fragmentation | External + internal | None (fixed size) |
+| Double-free safety | Undefined behaviour | Detected & logged |
+| Static footprint | Hidden (OS-managed) | Fully visible at link time |
+| ISR-safe | No (system call) | Yes (no blocking) |
+| MISRA-C compliant | No (dynamic allocation forbidden) | Yes |
+
+## Configuration
+
+| Macro | Default | Description |
+|-------|---------|-------------|
+| `RTOS_MAX_TASKS` | 8 | Maximum number of tasks |
+| `RTOS_QUEUE_SIZE` | 10 | Message queue capacity |
+| `RTOS_STACK_SIZE` | 256 | Per-task stack in bytes |
+| `RTOS_TIME_SLICE_TICKS` | 1 | Ticks before equal-priority preemption |
+| `RTOS_POOL_BLOCK_SIZE` | 32 | Memory pool block size in bytes |
+| `RTOS_POOL_BLOCK_COUNT` | 16 | Number of blocks in the memory pool |
+
+## Module Interaction (v1.8)
+
+```text
+rtos_init()
+  ├─► scheduler_init()  ──► timer_init()     [binds TCB array, resets tick]
+  └─► memory_init()                          [builds free list, clears bitmap]
+
+rtos_run() ──► scheduler_run() [per cycle]:
+  1. timer_tick()                ← advance g_kernel_tick
+  2. timer_update_sleep()        ← expire sleeping tasks
+  3. peek_highest_priority()     ← identify best READY task (non-destructive)
+  4. Preemption decision:
+       Forced switch?     ──► current task is BLOCKED/SUSPENDED → do_context_switch()
+       Priority preempt?  ──► re-queue outgoing ──► do_context_switch()
+       Slice expired?     ──► re-queue outgoing ──► do_context_switch()
+       Continue?          ──► run current task directly (no context switch)
+  5. do_context_switch()         ← context_switch() or context_restore()
+                                   + task_function() call
+
+memory_alloc()   ← callable from any task at any time after rtos_init()
+memory_free()    ← callable from any task; validates block and bitmap before returning
+
+rtos_task_sleep(n)
+  └─► sets TCB.sleep_ticks = n
+  └─► scheduler_set_current_task_state(BLOCKED, BLOCK_SLEEP)
+
+timer_update_sleep()
+  └─► scheduler_set_task_state(TASK_READY) when sleep_ticks reaches 0
+
+scheduler_unblock_one(reason)
+  └─► called by rtos_sem_signal(), rtos_mutex_unlock(), rtos_queue_send/receive()
+  └─► scheduler_set_task_state(TASK_READY) for the highest-priority waiter
 ```
 
 ## Preemptive Scheduling Algorithm (v1.7)
 
 At the start of each scheduler cycle, after advancing the tick and waking
-sleeping tasks, the scheduler makes one of four decisions:
+sleeping tasks, the scheduler makes one of five decisions:
 
 | Case | Condition | Action | Log tag |
 |------|-----------|--------|---------|
 | **First tick** | No current task exists | Switch to best READY task | `[First tick]` |
+| **Forced switch** | Current task is BLOCKED or SUSPENDED | Switch to best READY task without re-queuing | `[Forced switch]` |
 | **Priority preemption** | `best.priority > current.priority` | Immediately switch to the higher-priority task | `[Preempted]` |
 | **Time-slice expiry** | `best.priority == current.priority` AND `slice_ticks_used >= RTOS_TIME_SLICE_TICKS` | Rotate to the next equal-priority task | `[Slice expired]` |
 | **Continue** | All other cases | Current task runs for another tick | `Continue` |
@@ -96,92 +234,9 @@ sleeping tasks, the scheduler makes one of four decisions:
   very next tick.
 - **Equal-priority fairness.** When multiple tasks share the same priority,
   they are rotated on a configurable time slice (`RTOS_TIME_SLICE_TICKS`,
-  default 3 ticks).  Increase this value for coarser slicing.
-- **Blocking is cooperative.** A task that calls `rtos_task_sleep()`,
-  `rtos_sem_wait()`, `rtos_mutex_lock()`, or `rtos_queue_receive/send()` and
-  cannot proceed immediately blocks itself and cedes the CPU in the same tick.
+  default 1 tick for strict round-robin).
 
-### Time-slice counter (`slice_ticks_used`)
-
-Stored in `TCB.slice_ticks_used`.  Lifecycle:
-
-- **Incremented** each tick the current task continues without a context switch.
-- **Reset to 0** whenever the task is preempted, blocks, completes, or
-  re-enters the ready queue via `scheduler_set_task_state()`.
-
-### Scheduler state diagram
-
-```text
-                         rtos_create_task()
-                              |
-                              v
-                        +-----------+
-                        | SUSPENDED |<-------- rtos_suspend_task()
-                        +-----------+
-                              |
-              scheduler_set_task_state(READY)
-              rtos_resume_task()
-                              |
-                              v
-                  +----------------------+
-     +----------->|        READY         |<--------+
-     |            | (in ready queue)     |         |
-     |            +----------------------+         |
-     |                      |                      |
-     |         scheduler picks this task            |
-     |         (priority preemption or first tick)  |
-     |                      |                      |
-     |                      v                      |
-     |            +----------------------+         |
-     |            |      RUNNING         |         |
-     |            | slice_ticks_used++   |         |
-     |            +----------------------+         |
-     |            /           |          \         |
-     |           /            |           \        |
-     |  task blocks   task completes   time-slice  |
-     |           |            |         expired    |
-     |           v            v              v     |
-     |      +----------+  (re-queued       (re-queued
-     |      | BLOCKED  |   as READY)        as READY)--+
-     |      +----------+
-     |           |
-     |  sleep/sem/mutex
-     |  condition met
-     |           |
-     +-----------+   (READY again via timer_update_sleep
-                       or scheduler_unblock_one)
-```
-
-## Module Interaction (v1.7)
-
-```text
-rtos_init()
-  └─► scheduler_init()  ──► timer_init()      [binds TCB array, resets tick]
-
-rtos_run() ──► scheduler_run() [per cycle]:
-  1. timer_tick()                ← advance g_kernel_tick
-  2. timer_update_sleep()        ← expire sleeping tasks
-  3. peek_highest_priority()     ← identify best READY task (no dequeue yet)
-  4. Preemption decision:
-       Priority preempt?  ──► re-queue outgoing ──► do_context_switch()
-       Slice expired?     ──► re-queue outgoing ──► do_context_switch()
-       Continue?          ──► run current task directly (no context switch)
-  5. do_context_switch()         ← context_switch() or context_restore()
-                                   + task_function() call
-
-rtos_task_sleep(n)
-  └─► sets TCB.sleep_ticks = n
-  └─► scheduler_set_current_task_state(BLOCKED, BLOCK_SLEEP)
-
-timer_update_sleep()
-  └─► scheduler_set_task_state(TASK_READY) when sleep_ticks reaches 0
-
-scheduler_unblock_one(reason)
-  └─► called by rtos_sem_signal(), rtos_mutex_unlock(), rtos_queue_send/receive()
-  └─► scheduler_set_task_state(TASK_READY) for the highest-priority waiter
-```
-
-## Timer Module (v1.6 / v1.7)
+## Timer Module (v1.6)
 
 | Function | Description |
 |----------|-------------|
@@ -190,94 +245,27 @@ scheduler_unblock_one(reason)
 | `timer_now()` | Return the current tick (used for logging and scheduling). |
 | `timer_update_sleep()` | Decrement sleep counters; wake tasks whose counter reaches zero. |
 
-## Configuration
+## Memory Pool API (v1.8)
 
-| Macro | Default | Description |
-|-------|---------|-------------|
-| `RTOS_MAX_TASKS` | 8 | Maximum number of tasks |
-| `RTOS_QUEUE_SIZE` | 10 | Message queue capacity |
-| `RTOS_STACK_SIZE` | 256 | Per-task stack in bytes |
-| `RTOS_TIME_SLICE_TICKS` | 3 | Ticks before equal-priority preemption |
-
-## Software Context-Switching (v1.5)
-
-```c
-void context_switch(CPUContext *outgoing, const CPUContext *incoming);
-```
-
-`context_switch()` lives in `context.c` and is called exclusively from
-`scheduler.c`.  It saves the outgoing task's `active_context` then loads the
-incoming task's context atomically.
-
-### Per-tick log sequence
-
-```text
-[HH:MM] [Tick N] Sleep expired  : <task> waking up        (if applicable)
-[HH:MM] [Tick N] [Preempted]    : <cur> (pri=P) by <new> (pri=Q)
-[HH:MM] [Tick N] Current Task  : <outgoing> (state=RUNNING)
-[HH:MM] [Tick N] Context Saved  : <outgoing>
-[HH:MM] [Tick N] Context Switch [Preempted]: <outgoing> -> <incoming>
-[HH:MM] [Tick N] Next Task      : <incoming> (priority=P)
-[HH:MM] [Tick N] Context Restored: <incoming> (pc=0x... lr=0x...)
-[HH:MM] [Tick N] Task Running   : <incoming> sp=0x... ready=R
-```
-
-Or for a continuation (no switch):
-
-```text
-[HH:MM] [Tick N] Continue      : <task> (slice=S/MAX, priority=P)
-[HH:MM] [Tick N] Task Running  : <task> sp=0x... ready=R
-```
-
-## Memory Layout
-
-```text
-Task A TCB
-+-----------------------------+
-| task id / priority / state  |
-| sleep_ticks                 |
-| slice_ticks_used            |
-| stack_size = RTOS_STACK_SIZE|
-| stack_pointer ------------+ |
-| CPUContext (r0..xpsr)     | |
-| stack_memory[0]           | |
-| ...                       | |
-| stack_memory[N - 1]       |<+
-+-----------------------------+
-```
-
-## Example Output
-
-```text
-Mini RTOS PC Simulator
-----------------------
-[00:00] Task Created: Sensor Task priority=3
-[00:00] Task Created: Logger Task priority=2
-[00:00] Task Created: Display Task priority=1
-[00:01] [Tick 1] Context Switch [First tick]: (none) -> Sensor Task
-[00:01] [Tick 1] Next Task      : Sensor Task (priority=3)
-[00:01] [Tick 1] Context Restored: Sensor Task (pc=0x... lr=0xFFFFFFFD)
-[00:01] [Tick 1] Task Running   : Sensor Task sp=0x... ready=2
-[00:01] Queue Send by Sensor Task value=100 count=1
-[00:01] Sensor Task produced sample=100
-[00:01] Semaphore Released count=1
-[00:01] Logger Task unblocked
-[00:01] [Tick 1] Sensor Task state=BLOCKED
-[00:02] [Tick 2] [Preempted]    : Logger Task (pri=2) by Sensor Task (pri=3)
-...
-[00:04] [Tick 4] Sleep expired  : Sensor Task waking up
-[00:04] [Tick 4] Continue      : Display Task (slice=1/3, priority=1)
-```
+| Function | Description |
+|----------|-------------|
+| `memory_init()` | Initialise pool: build free list, clear bitmap. Called from `rtos_init()`. |
+| `memory_alloc()` | Allocate one block (O(1)); returns `NULL` on exhaustion. |
+| `memory_free(ptr)` | Return a block to the pool (O(1)); validates pointer and double-free. |
+| `memory_available_blocks()` | Return count of free blocks remaining. |
 
 ## Project Map
 
 ```text
 include/context.h    CPU context model API + context_switch() declaration
-include/rtos.h       Public kernel API, data structures, RTOS_TIME_SLICE_TICKS
+include/memory.h     Fixed-size memory pool API and design documentation
+include/rtos.h       Public kernel API, data structures, configuration macros
 include/scheduler.h  Internal scheduler module API
 include/timer.h      Kernel tick and sleep management API
 src/context.c        context_init, context_save, context_restore,
                      context_copy, context_active, context_switch
+src/memory.c         Embedded free-list allocator, double-free protection,
+                     O(1) memory_alloc / memory_free
 src/rtos.c           Task lifecycle, sync primitives, message queue, logging
 src/scheduler.c      Ready queue, preemptive priority selection, time-slice
                      round-robin, six-phase context-switch dispatch
@@ -287,6 +275,17 @@ tests/               Focused simulator behaviour tests
 Makefile             Build commands
 ```
 
+## Example Log — Memory Pool
+
+```text
+[00:00] Memory Pool Init: 16 blocks x 32 bytes = 512 bytes total
+[00:01] Memory Alloc: block 0 @ 0x... (15/16 blocks free)
+[00:01] Memory Alloc: block 1 @ 0x... (14/16 blocks free)
+[00:02] Memory Free: block 0 @ 0x... (15/16 blocks free)
+[00:03] Memory Alloc FAILED: pool exhausted (0/16 blocks free)
+[00:04] Memory Free ERROR: double-free detected on block 1 @ 0x...
+```
+
 ## Suggested Next Milestones
 
 1. Add task deletion and task statistics (run count, total ticks used).
@@ -294,3 +293,4 @@ Makefile             Build commands
 3. Port the scheduler tick to a hardware timer interrupt.
 4. Map task stacks to real memory regions on STM32 or ESP32.
 5. Add a watchdog tick that terminates tasks exceeding a deadline.
+6. Add a variable-size memory pool using a buddy allocator or slab allocator.
