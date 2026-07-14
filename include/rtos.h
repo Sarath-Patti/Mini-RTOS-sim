@@ -7,9 +7,18 @@
 
 #include "context.h"
 
-#define RTOS_MAX_TASKS 8
-#define RTOS_QUEUE_SIZE 10
-#define RTOS_STACK_SIZE 256u
+#define RTOS_MAX_TASKS      8
+#define RTOS_QUEUE_SIZE     10
+#define RTOS_STACK_SIZE     256u
+
+/*
+ * RTOS_TIME_SLICE_TICKS — maximum consecutive ticks a task may run before
+ * being preempted in favour of the next equal-priority READY task.
+ *
+ * Set to 1 for strict round-robin (default).  Increase for coarser slicing.
+ * Has no effect when a higher-priority task is always present.
+ */
+#define RTOS_TIME_SLICE_TICKS 1u
 
 typedef uintptr_t RtosStackWord;
 
@@ -43,6 +52,12 @@ typedef struct {
     CPUContext context;
     void (*task_function)(void);
     const char *name;
+    /*
+     * slice_ticks_used — number of consecutive ticks this task has been
+     * the running task.  Reset to 0 on every context switch away from
+     * this task.  Used by the scheduler to enforce RTOS_TIME_SLICE_TICKS.
+     */
+    uint32_t slice_ticks_used;
 } TCB;
 
 typedef struct {

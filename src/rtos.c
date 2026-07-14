@@ -50,7 +50,8 @@ int rtos_create_task(const char *name, int priority, void (*task_function)(void)
     task->priority = priority;
     task->state = TASK_SUSPENDED;
     task->block_reason = BLOCK_NONE;
-    task->sleep_ticks = 0;
+    task->sleep_ticks      = 0;
+    task->slice_ticks_used = 0;
     init_task_stack(task);
     context_init(&task->context, task_function);
     task->task_function = task_function;
