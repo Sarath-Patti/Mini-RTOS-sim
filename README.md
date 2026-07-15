@@ -1,328 +1,526 @@
-# Mini Real-Time Operating System Simulator
+<!--
+  SPDX-License-Identifier: MIT
+  Mini RTOS Simulator — README
+-->
 
-This is a PC-based Mini RTOS simulator written in C. It is meant to be built
-first on a normal computer, then gradually ported to embedded hardware such as
-STM32 or ESP32.
+<div align="center">
 
-## Features
+# Mini RTOS Simulator
 
-- Task Control Blocks with task id, priority, state, and private stack metadata
-- READY, RUNNING, BLOCKED, and SUSPENDED task states
-- Fixed-size per-task stacks configured by `RTOS_STACK_SIZE`
-- Cortex-M-style CPU context model with R0–R12, LR, PC, and xPSR
-- Static ready queue containing only READY tasks
-- Scheduler module separated from kernel services
-- **v1.5 — Software context switching** via `context_switch()`
-- **v1.6 — Dedicated timer module** for kernel tick and sleep management
-- **v1.7 — Preemptive priority scheduler** with time-slice round-robin
-- **v1.8 — Fixed-size memory pool allocator** with O(1) alloc/free and double-free protection
-- **v1.9 — Software timers and event flags**
-- Counting semaphore, mutex with owner tracking, fixed-size message queue
-- UART-style debug logs annotated with the current kernel tick
+**A host-based, incremental Real-Time Operating System kernel written in portable C99.**
 
-## Build and Run
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Build](https://img.shields.io/badge/build-passing-brightgreen)](#build-instructions)
+[![Standard](https://img.shields.io/badge/C-C99-orange)](#build-instructions)
 
-```sh
-make
-make run
+</div>
+
+---
+
+## Table of Contents
+
+1. [Project Overview](#project-overview)
+2. [Motivation](#motivation)
+3. [Key Features](#key-features)
+4. [Architecture Overview](#architecture-overview)
+5. [Module Responsibilities](#module-responsibilities)
+6. [Repository Structure](#repository-structure)
+7. [Build Instructions](#build-instructions)
+8. [Running the Demo](#running-the-demo)
+9. [Running Tests](#running-tests)
+10. [Example Output](#example-output)
+11. [Project Evolution](#project-evolution)
+12. [Current RTOS Capabilities](#current-rtos-capabilities)
+13. [Design Decisions](#design-decisions)
+14. [Configuration Reference](#configuration-reference)
+15. [Future Improvements](#future-improvements)
+16. [Contributing](#contributing)
+17. [License](#license)
+
+---
+
+## Project Overview
+
+Mini RTOS Simulator is a fully self-contained, host-runnable RTOS kernel
+implemented in portable C99.  It models the essential services of a
+production-grade embedded RTOS — task management, preemptive scheduling,
+software context switching, inter-task synchronisation, memory management, and
+software timers — without relying on any hardware, OS threads, or
+platform-specific code.
+
+The project is designed to be read, understood, and extended one milestone at a
+time.  Every module has a single, clearly documented responsibility.  The
+complete kernel builds with `gcc -std=c99` and produces no warnings even under
+`-Wall -Wextra -Wpedantic`.
+
+---
+
+## Motivation
+
+Most embedded RTOS textbooks and tutorials jump immediately to Cortex-M
+assembly, hardware timers, and linker scripts.  This project takes the opposite
+approach: implement a complete, correct RTOS kernel entirely in portable C, run
+it on a developer laptop, verify it with a deterministic test suite, and only
+then consider porting it to silicon.
+
+The goals are:
+
+- **Readable first.** Every design decision is explained in the source.
+- **Testable.** The kernel is purely cooperative and deterministic, so tests
+  are reproducible without hardware.
+- **Incremental.** Each git tag corresponds to one well-defined feature
+  milestone so the full history tells the story of how an RTOS is built.
+- **Port-ready.** The Cortex-M register layout, EXC_RETURN values, and NVIC
+  conventions are already present in the context model.
+
+---
+
+## Key Features
+
+| Feature | Status |
+|---------|--------|
+| Task Control Blocks with priority, state, and stack | ✅ |
+| READY / RUNNING / BLOCKED / SUSPENDED states | ✅ |
+| Per-task private stack (configurable size) | ✅ |
+| Cortex-M CPU context model (R0–R12, LR, PC, xPSR) | ✅ |
+| Software context switch (save / restore / switch) | ✅ |
+| Preemptive priority scheduler | ✅ |
+| Time-slice round-robin for equal-priority tasks | ✅ |
+| Kernel tick counter and sleep management | ✅ |
+| Software timers (one-shot and periodic) | ✅ |
+| Counting semaphore | ✅ |
+| Mutex with owner tracking | ✅ |
+| Fixed-size integer message queue | ✅ |
+| Fixed-size memory pool allocator (O(1), no fragmentation) | ✅ |
+| Event flags (32-bit bitmask, auto-reset) | ✅ |
+| UART-style timestamped debug logging | ✅ |
+| Portable C99, zero platform dependencies | ✅ |
+
+---
+
+## Architecture Overview
+
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│                       Application / Demo                            │
+│  sensor_task()   logger_task()   display_task()   timer callbacks   │
+└────────────────────────────┬────────────────────────────────────────┘
+                             │ rtos_* API
+┌────────────────────────────▼────────────────────────────────────────┐
+│                         rtos.c  (Kernel Core)                       │
+│  Task lifecycle  ·  Semaphore  ·  Mutex  ·  MessageQueue  ·  Logging│
+└───────┬──────────────────┬───────────────────┬───────────────────────┘
+        │ scheduler_*      │ timer_*            │ memory_* / event_*
+┌───────▼──────┐  ┌────────▼───────┐  ┌────────▼──────────────────────┐
+│ scheduler.c  │  │   timer.c      │  │  memory.c        event.c       │
+│              │  │                │  │                                 │
+│ Ready queue  │  │ g_kernel_tick  │  │ Fixed-size pool  Event flags   │
+│ Priority sel │  │ Sleep mgmt     │  │ Free list O(1)   Waiter table  │
+│ Time slicing │  │ Soft timers    │  │ Double-free det  BLOCK_EVENT   │
+│ Context disp │  │                │  │                                 │
+└───────┬──────┘  └────────────────┘  └─────────────────────────────── ┘
+        │ context_switch()
+┌───────▼──────────────────┐
+│       context.c           │
+│  CPUContext (R0–xPSR)    │
+│  save / restore / switch  │
+└──────────────────────────┘
 ```
 
-## Test
+### Scheduler Interaction (per kernel tick)
+
+```text
+scheduler_run() [one cycle]
+        │
+        ├─[1]─ timer_tick()              advance g_kernel_tick
+        │
+        ├─[2]─ timer_update_sleep()
+        │         ├── expire sleepers    BLOCK_SLEEP → TASK_READY
+        │         └── timer_update_soft()
+        │               └── fire armed soft timers (callbacks)
+        │
+        ├─[3]─ peek_highest_priority()   identify best READY task (non-destructive)
+        │
+        ├─[4]─ Scheduling decision:
+        │         ┌─ No current task?    → [First tick]    do_context_switch()
+        │         ├─ Current BLOCKED?    → [Forced switch] do_context_switch()
+        │         ├─ Preempted?          → [Preempted]     do_context_switch()
+        │         ├─ Slice expired?      → [Slice expired] do_context_switch()
+        │         └─ Continue            → run current task directly
+        │
+        └─[5]─ task_function()           cooperative task body
+```
+
+### Context Switching Flow
+
+```text
+do_context_switch(outgoing_idx, incoming_idx)
+        │
+        ├─[Phase 1]─ uart_log "Context Saved"
+        │
+        ├─[Phase 2]─ context_switch(&outgoing->context, &incoming->context)
+        │                 ├── context_copy(outgoing, &active_context)   ← save
+        │                 └── context_copy(&active_context, incoming)   ← restore
+        │
+        ├─[Phase 3]─ *current_task_index = incoming_idx
+        │             incoming->slice_ticks_used = 1
+        │
+        ├─[Phase 4]─ outgoing re-queued to ready queue (if still READY)
+        │
+        ├─[Phase 5]─ uart_log "Next Task" + "Context Restored"
+        │
+        └─[Phase 6]─ incoming->task_function()    ← cooperative call
+```
+
+### Memory Pool Layout
+
+```text
+ g_pool_storage[RTOS_POOL_BLOCK_COUNT][RTOS_POOL_BLOCK_SIZE]
+
+  Block 0       Block 1       Block 2            Block N-1
+ ┌──────────┐  ┌──────────┐  ┌──────────┐       ┌──────────┐
+ │ next = 1 │→ │ next = 2 │→ │ next = 3 │→ ...→ │next = -1 │  (free list)
+ └──────────┘  └──────────┘  └──────────┘       └──────────┘
+
+ After memory_alloc():  head advances; bitmap[idx] = 1
+ After memory_free():   block prepended to head; bitmap[idx] = 0
+                        double-free detected if bitmap[idx] == 0 already
+```
+
+### Event Flag Flow
+
+```text
+event_flags_set(ef, mask)               event_flags_wait(ef, mask)
+        │                                       │
+        ├── ef->flags |= mask                   ├── (ef->flags & mask) == mask?
+        │                                       │     YES → ef->flags &= ~mask
+        └── scan waiters[]                      │            return true  (continue)
+              waiter.mask ⊆ ef->flags?          │
+                YES → ef->flags &= ~mask        └── NO  → record (task_idx, mask)
+                      scheduler_set_task_state          → BLOCK_EVENT
+                        (TASK_READY)                    → return false (blocked)
+                      compact waiter slot
+```
+
+---
+
+## Module Responsibilities
+
+| Module | File(s) | Owns |
+|--------|---------|------|
+| **Kernel Core** | `rtos.c` / `rtos.h` | Task lifecycle, semaphore, mutex, queue, logging |
+| **Scheduler** | `scheduler.c` / `scheduler.h` | Ready queue, preemption, time-slice, context dispatch |
+| **Timer** | `timer.c` / `timer.h` | Kernel tick, sleep countdown, software timer pool |
+| **Context** | `context.c` / `context.h` | CPUContext save/restore/switch, active context register |
+| **Memory** | `memory.c` / `memory.h` | Fixed-size pool, free list, double-free protection |
+| **Event** | `event.c` / `event.h` | Event flag groups, waiter table, BLOCK_EVENT unblocking |
+
+**Dependency rule:** modules may only depend on modules listed to their right in
+the table above (or on `rtos.h` for shared types).  No circular dependencies exist.
+
+---
+
+## Repository Structure
+
+```text
+mini-rtos-sim/
+├── include/
+│   ├── context.h       CPUContext type and context API
+│   ├── event.h         EventFlags type and event API
+│   ├── memory.h        Memory pool API and design documentation
+│   ├── rtos.h          Public kernel API, TCB, config macros
+│   ├── scheduler.h     Internal scheduler API
+│   └── timer.h         Kernel tick + software timer API
+├── src/
+│   ├── context.c       Software context switch implementation
+│   ├── event.c         Event flag implementation
+│   ├── main.c          Demo: sensor / logger / display tasks
+│   ├── memory.c        Fixed-size pool allocator
+│   ├── rtos.c          Kernel core: tasks, sync primitives, logging
+│   ├── scheduler.c     Preemptive priority scheduler
+│   └── timer.c         Tick management + soft timer engine
+├── tests/
+│   └── test_states.c   Task state, stack, and context tests
+├── CHANGELOG.md        Milestone-by-milestone change log
+├── CONTRIBUTING.md     Development guide
+├── LICENSE             MIT License
+├── Makefile            Build system
+└── README.md           This file
+```
+
+---
+
+## Build Instructions
+
+**Requirements:** GCC (or any C99-conformant compiler), GNU Make.
+
+```sh
+# Clone the repository
+git clone https://github.com/Sarath-Patti/Mini-RTOS-sim.git
+cd Mini-RTOS-sim
+
+# Build both the demo and the test binary
+make
+
+# Optional: auto-format source (requires clang-format)
+make format
+```
+
+The build produces two executables in the repository root:
+
+| Binary | Description |
+|--------|-------------|
+| `mini_rtos` | Demo application (sensor / logger / display tasks) |
+| `test_states` | Unit test suite |
+
+---
+
+## Running the Demo
+
+```sh
+make run
+# or
+./mini_rtos
+```
+
+The demo runs a 25-tick simulation with three tasks:
+
+| Task | Priority | Period | Role |
+|------|----------|--------|------|
+| `Sensor Task` | 3 (highest) | 3 ticks | Produces integer samples, sends to queue, signals semaphore |
+| `Logger Task` | 2 | 2 ticks | Acquires semaphore, receives from queue, logs via mutex-protected UART |
+| `Display Task` | 1 (lowest) | 4 ticks | Locks mutex and refreshes the display |
+
+---
+
+## Running Tests
 
 ```sh
 make test
+# or
+./test_states
 ```
 
-## Architecture
+The test suite runs nine isolated test cases, each calling `rtos_init()` to
+get a clean kernel state:
+
+| Test | Verifies |
+|------|---------|
+| READY task execution | A READY task runs when scheduled |
+| BLOCKED task skipping | A sleeping task is never selected |
+| SUSPENDED task skipping | A suspended task is never selected |
+| Multiple READY tasks | Equal-priority tasks rotate correctly |
+| Private task stack allocation | No stack overlap between tasks |
+| Private task CPU context | Each task owns an independent CPUContext |
+| Context save updates destination | `context_save` writes only to its argument |
+| Context restore loads registers | Saved values match after `context_restore` |
+| Contexts do not overwrite | Two contexts are fully independent |
+
+Expected output:
 
 ```text
-Task Function
-     │
-     ▼
-Task Control Block
-     │
-     ├──▶ Task metadata  (task id, priority, state, sleep_ticks, slice_ticks_used)
-     ├──▶ Stack          (stack_memory, stack_size, stack_pointer)
-     └──▶ CPUContext     (R0–R12, LR, PC, xPSR)
-
-Timer Module (per tick)
-     │
-     ├──▶ [1] timer_tick()           — advance g_kernel_tick
-     ├──▶ [2] timer_update_sleep()   — decrement sleep counters; wake expired tasks
-     └──▶ [3] timer_update_soft()    — decrement & fire armed software timers
-
-Scheduler (per tick, after timer)
-     │
-     ├──▶ Peek best READY task
-     ├──▶ Preemption decision (priority / slice / forced / continue)
-     └──▶ do_context_switch()  ──▶  task_function()
-
-Memory Pool (available at any time after rtos_init)
-     │
-     ├──▶ memory_alloc()    — pop from free list, O(1)
-     └──▶ memory_free()     — push to free list, O(1), double-free safe
-
-Event Flags (available at any time after event_flags_init)
-     │
-     ├──▶ event_flags_set()   — OR mask into flags; wake matching waiters
-     ├──▶ event_flags_clear() — AND-NOT mask from flags
-     └──▶ event_flags_wait()  — immediate return (true) or block (false)
+PASS: READY task execution
+PASS: BLOCKED task skipping
+PASS: SUSPENDED task skipping
+PASS: multiple READY tasks in queue
+PASS: private task stack allocation
+PASS: private task CPU context ownership
+PASS: context save updates only destination
+PASS: context restore loads expected registers
+PASS: CPU contexts do not overwrite one another
+All task state, stack, and context tests passed
 ```
 
-## Software Timers (v1.9)
+---
 
-Software timers are statically allocated kernel objects that fire a callback
-function when their countdown expires.  They are driven by the existing kernel
-tick in `timer_update_soft()`, which is called automatically at the end of
-`timer_update_sleep()` — no scheduler changes are required.
-
-### Timer Modes
-
-| Mode | Behaviour |
-|------|-----------|
-| `TIMER_ONE_SHOT` | Fires once, then automatically disarms |
-| `TIMER_PERIODIC` | Fires every `period_ticks` ticks, auto-reloads |
-
-### Software Timer Lifecycle
+## Example Output
 
 ```text
-timer_soft_create()   → allocate slot, configure (NOT yet running)
-       │
-timer_soft_start()    → set remaining = period_ticks, active = true
-       │
-  [tick N arrives]
-       │
-timer_update_soft()   → remaining--
-       │
-  remaining == 0?
-       ├─ YES → callback(arg) fires
-       │          ├─ ONE_SHOT: active = false  (auto-disarm)
-       │          └─ PERIODIC: remaining = period_ticks  (auto-reload)
-       └─ NO  → wait
-       │
-timer_soft_stop()     → active = false (slot still allocated)
-timer_soft_delete()   → active = false, in_use = false (slot returned to pool)
+Mini RTOS PC Simulator
+----------------------
+[00:00] Memory Pool Init: 16 blocks x 32 bytes = 512 bytes total
+[00:00] Task Created: Sensor Task priority=3
+[00:00] Task Created: Logger Task priority=2
+[00:00] Task Created: Display Task priority=1
+[00:01] [Tick 1] Context Switch [First tick]: (none) -> Sensor Task
+[00:01] Queue Send by Sensor Task value=100 count=1
+[00:01] Sensor Task produced sample=100
+[00:01] Semaphore Released count=1
+[00:01] [Tick 1] Sensor Task state=BLOCKED
+[00:02] [Tick 2] [Forced switch]: Sensor Task (BLOCKED) -> Logger Task
+[00:02] Semaphore Acquired by Logger Task count=0
+[00:02] Queue Receive by Logger Task value=100 count=0
+[00:02] Mutex Locked by Logger Task
+[00:02] Logger Task stored sample=100
+[00:02] Mutex Released by Logger Task
+[00:02] [Tick 2] Logger Task state=BLOCKED
+[00:03] [Tick 3] [Forced switch]: Logger Task (BLOCKED) -> Display Task
+[00:03] Mutex Locked by Display Task
+[00:03] Display Task refreshed
+[00:03] Mutex Released by Display Task
+[00:03] [Tick 3] Display Task state=BLOCKED
+[00:04] [Tick 4] Idle: no READY tasks
+...
 ```
 
-### Per-expiry log sequence
+---
 
-```text
-[HH:MM] Timer Expired  : <name> (mode=PERIODIC|ONE_SHOT)
-[HH:MM] Timer Callback : <name> executing
-[HH:MM] Timer Callback : <name> done
-[HH:MM] Timer Reload   : <name> (next in N ticks)   ← PERIODIC only
-[HH:MM] Timer Stopped  : <name> (one-shot complete) ← ONE_SHOT only
-```
+## Project Evolution
 
-### Example usage
+Each git tag marks one completed milestone.  The repository history is the
+complete narrative of how this RTOS was built.
 
-```c
-static void heartbeat_cb(void *arg) {
-    uart_log("Heartbeat ping");
-}
+| Tag | Milestone | Key Addition |
+|-----|-----------|--------------|
+| `v1.0` | Task Control Blocks | `TCB`, task states, task list |
+| `v1.1` | Cooperative Scheduler | Ready queue, basic round-robin |
+| `v1.2` | Synchronisation | Semaphore, mutex, message queue |
+| `v1.3` | Per-task Stacks | Private stack allocation, overlap checks |
+| `v1.4` | CPU Context Model | `CPUContext` (R0–xPSR), `context_init/save/restore` |
+| `v1.5` | Software Context Switch | `context_switch()`, `context_active()`, scheduler integration |
+| `v1.6` | Timer Module | `timer.c/h`, kernel tick, sleep management moved from scheduler |
+| `v1.7` | Preemptive Priority Scheduler | Priority preemption, time-slice round-robin, `do_context_switch()` |
+| `v1.8` | Memory Pool | Fixed-size allocator, embedded free list, double-free protection |
+| `v1.9` | Software Timers & Event Flags | `SoftTimer`, `EventFlags`, `BLOCK_EVENT` |
+| `v2.0` | Final Release | README, CHANGELOG, LICENSE, CONTRIBUTING, Makefile polish |
 
-SoftTimer *hb = timer_soft_create("heartbeat", TIMER_PERIODIC, 5, heartbeat_cb, NULL);
-timer_soft_start(hb);
-/* fires every 5 ticks until timer_soft_stop(hb) or timer_soft_delete(hb) */
-```
+---
 
-## Event Flags (v1.9)
+## Current RTOS Capabilities
 
-Event flags provide bitmask-based task synchronisation.  A 32-bit `flags`
-field allows up to 32 independent boolean signals per `EventFlags` object.
+### Task Management
 
-### Blocking model
+- Up to `RTOS_MAX_TASKS` (default 8) concurrent tasks.
+- Each task has a numeric priority (higher = more urgent) and a private stack.
+- States: `TASK_READY`, `TASK_RUNNING`, `TASK_BLOCKED`, `TASK_SUSPENDED`.
+- `rtos_suspend_task()` / `rtos_resume_task()` for explicit lifecycle control.
 
-`event_flags_wait()` tests the requested bits immediately:
+### Scheduler
 
-- **Bits already set** → clear them (auto-reset) and return `true`.  Task continues.
-- **Bits not yet set** → record the task in the waiter table, block it
-  (`BLOCK_EVENT`), and return `false`.  The caller must return from the task
-  function immediately; it is rescheduled when `event_flags_set()` satisfies
-  its mask.
+- **Priority preemption:** the highest-priority READY task always runs.
+- **Time-slice round-robin:** equal-priority tasks share the CPU in configurable
+  tick slices (`RTOS_TIME_SLICE_TICKS`, default 1 for strict round-robin).
+- **Forced switch:** a blocked or suspended task is never allowed to continue;
+  the scheduler immediately selects the next best READY task.
+- No unnecessary context switches: if the current task is still the best
+  candidate and its slice has not expired, it runs without any save/restore.
 
-`event_flags_set()` scans the waiter table after updating the flags and wakes
-every task whose `required_mask` is now a subset of the current flags.
+### Synchronisation
 
-### Auto-reset semantics
+| Primitive | API | Semantics |
+|-----------|-----|-----------|
+| Counting semaphore | `rtos_sem_wait()` / `rtos_sem_signal()` | Blocks on zero; signals wake one waiter |
+| Mutex | `rtos_mutex_lock()` / `rtos_mutex_unlock()` | Owner-tracked; non-recursive |
+| Message queue | `rtos_queue_send()` / `rtos_queue_receive()` | Fixed `int` payload; blocks when full/empty |
+| Event flags | `event_flags_wait()` / `event_flags_set()` | 32-bit bitmask; auto-reset on satisfaction |
 
-When a wait is satisfied (either immediately or via `event_flags_set()`), the
-bits that were waited on are cleared from the `EventFlags.flags` field.  This
-prevents a second waiter from seeing the same event without the producer
-explicitly re-setting it.
+### Timer
 
-### Event flags state diagram
+- Monotonic kernel tick counter owned by `timer.c`.
+- `rtos_task_sleep(n)` blocks a task for `n` ticks.
+- Software timers: one-shot or periodic, callback-based, statically allocated pool.
 
-```text
-Producer task            EventFlags object           Consumer task
-──────────               ─────────────────           ─────────────
-event_flags_set(mask) ──▶  flags |= mask
-                            scan waiters
-                            waiter.mask ⊆ flags?
-                              YES ──▶ flags &= ~mask ──▶ scheduler_set_task_state(READY)
-                              NO  ──▶ skip
+### Memory
 
-                                                      event_flags_wait(mask)
-                                                        flags & mask == mask?
-                                                          YES ──▶ flags &= ~mask; return true
-                                                          NO  ──▶ record waiter; BLOCK_EVENT; return false
-```
+- Fixed-size block allocator: `memory_alloc()` / `memory_free()`.
+- O(1) allocation and deallocation via embedded free list.
+- Double-free detection with a separate allocation bitmap.
+- No fragmentation; all memory visible at link time.
 
-### Example usage
+---
 
-```c
-static EventFlags data_ready_event;
+## Design Decisions
 
-/* Producer (e.g. sensor task or timer callback) */
-event_flags_set(&data_ready_event, 0x01u);
+**No dynamic memory.**  The kernel uses no `malloc`, `calloc`, `realloc`, or
+`free`.  Every data structure is statically allocated.  This matches MISRA-C
+guidelines for safety-critical embedded software.
 
-/* Consumer */
-if (!event_flags_wait(&data_ready_event, 0x01u)) {
-    return;   /* blocked; will retry on next scheduling */
-}
-/* process data */
-```
+**Cooperative task dispatch.**  Task functions are called directly from the
+scheduler.  There are no OS threads, `setjmp`/`longjmp`, `ucontext`, assembly,
+or signals.  This makes the kernel fully portable and trivially debuggable.
 
-## Module Interaction (v1.9)
+**Single active context register.**  `context.c` maintains one `active_context`
+struct.  `context_switch()` copies the outgoing task's fields into this struct
+and copies the incoming task's fields out.  The host PC/LR values are
+therefore accurate Cortex-M-style values (EXC_RETURN in LR, Thumb bit in PC).
 
-```text
-rtos_init()
-  ├─▶ scheduler_init()  ──▶ timer_init()     [binds TCB array, resets tick + soft-timer pool]
-  └─▶ memory_init()                          [builds free list, clears bitmap]
+**Embedded free list.**  The memory pool stores the next-free-block index in
+the first `sizeof(int)` bytes of every free block, using `memcpy` to avoid
+strict-aliasing violations.  No separate linked-list node is required.
 
-Application startup:
-  event_flags_init(&ef)                      [zero flags, empty waiter table]
-  t = timer_soft_create(…)                   [claim timer slot]
-  timer_soft_start(t)                        [arm timer]
+**`scheduler_current_task_index()` accessor.**  Rather than exposing the
+current task index through `rtos.h` (which would blur the boundary between
+the kernel core and the scheduler), `event.c` calls a minimal scheduler
+accessor.  This keeps the dependency graph acyclic.
 
-rtos_run() ──▶ scheduler_run() [per cycle]:
-  1. timer_tick()                ← advance g_kernel_tick
-  2. timer_update_sleep()
-       ├─ expire sleeping tasks (BLOCK_SLEEP → TASK_READY)
-       └─ timer_update_soft()   ← decrement & fire soft timers (calls callbacks)
-                                   callback may call event_flags_set() to wake waiters
-  3. peek_highest_priority()     ← identify best READY task
-  4. Preemption decision:
-       Forced switch?    → do_context_switch()  (current task BLOCKED/SUSPENDED)
-       Priority preempt? → re-queue current → do_context_switch()
-       Slice expired?    → re-queue current → do_context_switch()
-       Continue?         → run current task in-place
-  5. task_function()             ← cooperative task body runs
-       may call:
-         event_flags_wait()      → BLOCK_EVENT if flags not satisfied
-         event_flags_set()       → wake matching waiters
-         memory_alloc/free()     → pool allocation
-         rtos_task_sleep()       → BLOCK_SLEEP
+**Auto-reset event flags.**  When `event_flags_set()` wakes a waiter, or when
+`event_flags_wait()` succeeds immediately, the satisfied bits are cleared.
+This prevents a second waiter from consuming the same event without the
+producer explicitly re-setting it, which is the correct semantics for
+edge-triggered hardware events.
 
-event_flags_set(ef, mask)
-  ├─ ef->flags |= mask
-  └─ for each waiter: (ef->flags & waiter.mask) == waiter.mask?
-       YES → ef->flags &= ~waiter.mask; scheduler_set_task_state(READY)
+---
 
-event_flags_wait(ef, mask)
-  ├─ (ef->flags & mask) == mask? → ef->flags &= ~mask; return true
-  └─ else: record (task_index, mask); scheduler_set_current_task_state(BLOCKED, BLOCK_EVENT); return false
-```
+## Configuration Reference
 
-## Memory Pool Architecture (v1.8)
-
-The pool is a 2-D static array `g_pool_storage[RTOS_POOL_BLOCK_COUNT][RTOS_POOL_BLOCK_SIZE]`.
-Free blocks are chained via an embedded free list (no separate metadata array).
-A parallel `uint8_t g_pool_allocated[]` bitmap provides O(1) double-free detection.
-
-| Operation | Time Complexity |
-|-----------|----------------|
-| `memory_alloc()` | O(1) — pop head of free list |
-| `memory_free()` | O(1) — validate + push to head |
-| `memory_available_blocks()` | O(1) — pre-maintained counter |
-
-## Preemptive Scheduling Algorithm (v1.7)
-
-| Case | Condition | Log tag |
-|------|-----------|---------|
-| First tick | No current task | `[First tick]` |
-| Forced switch | Current task is BLOCKED/SUSPENDED | `[Forced switch]` |
-| Priority preemption | `best.priority > current.priority` | `[Preempted]` |
-| Time-slice expiry | Equal priority, `slice_ticks_used >= RTOS_TIME_SLICE_TICKS` | `[Slice expired]` |
-| Continue | All other cases | `Continue` |
-
-## Configuration
+All configuration macros are defined in `include/rtos.h` and can be overridden
+at compile time with `-D<MACRO>=<value>`.
 
 | Macro | Default | Description |
 |-------|---------|-------------|
-| `RTOS_MAX_TASKS` | 8 | Maximum number of tasks |
-| `RTOS_QUEUE_SIZE` | 10 | Message queue capacity |
-| `RTOS_STACK_SIZE` | 256 | Per-task stack in bytes |
-| `RTOS_TIME_SLICE_TICKS` | 1 | Ticks before equal-priority preemption |
-| `RTOS_POOL_BLOCK_SIZE` | 32 | Memory pool block size in bytes |
-| `RTOS_POOL_BLOCK_COUNT` | 16 | Number of blocks in the memory pool |
-| `RTOS_SOFT_TIMER_COUNT` | 8 | Maximum simultaneous software timers |
-| `RTOS_EVENT_MAX_WAITERS` | 8 | Maximum waiters per EventFlags object |
+| `RTOS_MAX_TASKS` | `8` | Maximum concurrent tasks |
+| `RTOS_QUEUE_SIZE` | `10` | Message queue capacity (number of `int` slots) |
+| `RTOS_STACK_SIZE` | `256` | Per-task stack size in bytes |
+| `RTOS_TIME_SLICE_TICKS` | `1` | Time-slice length for equal-priority round-robin |
+| `RTOS_SOFT_TIMER_COUNT` | `8` | Maximum simultaneous software timers |
+| `RTOS_EVENT_MAX_WAITERS` | `8` | Maximum waiters per `EventFlags` object |
+| `RTOS_POOL_BLOCK_SIZE` | `32` | Memory pool block size in bytes |
+| `RTOS_POOL_BLOCK_COUNT` | `16` | Number of blocks in the memory pool |
 
-## API Reference
+> **Note:** `RTOS_POOL_BLOCK_SIZE` and `RTOS_POOL_BLOCK_COUNT` are defined in
+> `include/memory.h` and can be overridden independently.
+> `RTOS_EVENT_MAX_WAITERS` is defined in `include/event.h`.
 
-### Kernel Tick
+---
 
-| Function | Description |
-|----------|-------------|
-| `timer_init(tasks, n)` | Reset tick, clear soft-timer pool, bind task list |
-| `timer_tick()` | Advance kernel tick by one (scheduler use only) |
-| `timer_now()` | Return current kernel tick |
-| `timer_update_sleep()` | Expire sleepers + fire soft timers (scheduler use only) |
+## Future Improvements
 
-### Software Timers
+The following features are candidates for future milestones:
 
-| Function | Description |
-|----------|-------------|
-| `timer_soft_create(name, mode, period, cb, arg)` | Allocate timer slot |
-| `timer_soft_start(timer)` | Arm / restart timer |
-| `timer_soft_stop(timer)` | Disarm timer (slot kept) |
-| `timer_soft_delete(timer)` | Disarm and release slot |
+1. **Task statistics** — run count, total CPU ticks, worst-case latency.
+2. **Task deletion** — reclaim a TCB slot at runtime.
+3. **Deadlock detection** — cycle detection in the mutex ownership graph.
+4. **Priority inheritance** — prevent priority inversion in mutex scenarios.
+5. **Watchdog** — terminate tasks that exceed a tick deadline.
+6. **Variable-size allocator** — buddy allocator or slab allocator on top of the pool.
+7. **Event flag timeout** — `event_flags_wait_timeout(ef, mask, ticks)`.
+8. **AND/OR wait modes** — wait for *any* flag in a mask rather than *all*.
+9. **Hardware port** — replace `context_switch()` with Cortex-M PendSV handler.
+10. **Doxygen integration** — generate HTML API docs from existing header comments.
 
-### Event Flags
+---
 
-| Function | Description |
-|----------|-------------|
-| `event_flags_init(ef)` | Initialise to zero, empty waiter table |
-| `event_flags_set(ef, mask)` | OR mask into flags; wake matching waiters |
-| `event_flags_clear(ef, mask)` | AND-NOT mask from flags |
-| `event_flags_wait(ef, mask)` | Return true immediately or block task |
-| `event_flags_get(ef)` | Read flags without blocking |
+## Contributing
 
-### Memory Pool
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, coding style,
+commit message format, and pull request guidelines.
 
-| Function | Description |
-|----------|-------------|
-| `memory_init()` | Build free list, clear bitmap |
-| `memory_alloc()` | Allocate one block (O(1)); NULL on exhaustion |
-| `memory_free(ptr)` | Return block; validates pointer and double-free |
-| `memory_available_blocks()` | Return free block count |
+---
 
-## Project Map
+## License
+
+This project is released under the [MIT License](LICENSE).
 
 ```text
-include/context.h    CPU context model API + context_switch() declaration
-include/event.h      Event flags API (EventFlags, EventWaiter types + 5 functions)
-include/memory.h     Fixed-size memory pool API and design documentation
-include/rtos.h       Public kernel API, data structures, configuration macros
-include/scheduler.h  Internal scheduler module API (including scheduler_current_task_index)
-include/timer.h      Kernel tick, sleep management, software timer API
-src/context.c        context_init, context_save, context_restore, context_switch
-src/event.c          EventFlags implementation: set/clear/wait/get, waiter table, BLOCK_EVENT
-src/memory.c         Embedded free-list allocator, double-free protection
-src/rtos.c           Task lifecycle, sync primitives, message queue, logging
-src/scheduler.c      Ready queue, preemptive priority, time-slice, scheduler_current_task_index
-src/timer.c          Kernel tick, sleep countdown, software timer pool, timer_update_soft
-src/main.c           Demo application using sensor/logger/display tasks
-tests/               Focused simulator behaviour tests
-Makefile             Build commands
+Copyright (c) 2026 Sarath Patti
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 ```
-
-## Suggested Next Milestones
-
-1. Add task deletion and task statistics (run count, total ticks used).
-2. Replace `printf` with `UART_SendString()` behind the same `uart_log()` API.
-3. Port the scheduler tick to a hardware timer interrupt.
-4. Map task stacks to real memory regions on STM32 or ESP32.
-5. Add a watchdog tick that terminates tasks exceeding a deadline.
-6. Extend event flags with AND/OR wait modes and timeout support.

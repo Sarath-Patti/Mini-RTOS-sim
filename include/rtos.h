@@ -1,3 +1,30 @@
+/*
+ * rtos.h — Mini RTOS Simulator: Public Kernel API
+ *
+ * This is the primary include file for the kernel core.  Application code and
+ * all other kernel modules include this header to access shared types,
+ * configuration macros, and the public API.
+ *
+ * Types defined here
+ * ------------------
+ *   TCB            Task Control Block — owns all per-task state.
+ *   TaskState      READY / RUNNING / BLOCKED / SUSPENDED.
+ *   BlockReason    Why a BLOCKED task is waiting.
+ *   Semaphore      Counting semaphore.
+ *   Mutex          Binary mutex with owner tracking.
+ *   MessageQueue   Fixed-size integer FIFO.
+ *
+ * Configuration macros
+ * --------------------
+ *   RTOS_MAX_TASKS          Maximum concurrent tasks (default: 8).
+ *   RTOS_QUEUE_SIZE         MessageQueue capacity in slots (default: 10).
+ *   RTOS_STACK_SIZE         Per-task stack in bytes (default: 256).
+ *   RTOS_TIME_SLICE_TICKS   Equal-priority time slice (default: 1).
+ *   RTOS_SOFT_TIMER_COUNT   Software timer pool size (default: 8).
+ *
+ * All macros can be overridden at compile time with -D<MACRO>=<value>.
+ */
+
 #ifndef MINI_RTOS_H
 #define MINI_RTOS_H
 
