@@ -7,9 +7,15 @@
 
 #include "context.h"
 
-#define RTOS_MAX_TASKS      8
-#define RTOS_QUEUE_SIZE     10
-#define RTOS_STACK_SIZE     256u
+#define RTOS_MAX_TASKS        8
+#define RTOS_QUEUE_SIZE       10
+#define RTOS_STACK_SIZE       256u
+
+/*
+ * RTOS_SOFT_TIMER_COUNT — maximum number of simultaneously active software
+ * timers.  Increase if your application needs more concurrent timers.
+ */
+#define RTOS_SOFT_TIMER_COUNT 8u
 
 /*
  * RTOS_TIME_SLICE_TICKS — maximum consecutive ticks a task may run before
@@ -37,7 +43,8 @@ typedef enum {
     BLOCK_SEMAPHORE,
     BLOCK_MUTEX,
     BLOCK_QUEUE_EMPTY,
-    BLOCK_QUEUE_FULL
+    BLOCK_QUEUE_FULL,
+    BLOCK_EVENT          /* task is waiting for one or more event flags */
 } BlockReason;
 
 typedef struct {

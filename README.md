@@ -16,9 +16,8 @@ STM32 or ESP32.
 - **v1.6 — Dedicated timer module** for kernel tick and sleep management
 - **v1.7 — Preemptive priority scheduler** with time-slice round-robin
 - **v1.8 — Fixed-size memory pool allocator** with O(1) alloc/free and double-free protection
-- Counting semaphore
-- Mutex with owner tracking
-- Fixed-size integer message queue
+- **v1.9 — Software timers and event flags**
+- Counting semaphore, mutex with owner tracking, fixed-size message queue
 - UART-style debug logs annotated with the current kernel tick
 
 ## Build and Run
@@ -34,137 +33,218 @@ make run
 make test
 ```
 
-The tests verify READY task execution, BLOCKED task skipping, SUSPENDED task
-skipping, multiple READY tasks in the ready queue, private task stack layout,
-and simulated CPU context save/restore behaviour.
-
 ## Architecture
 
 ```text
 Task Function
-     |
-     v
+     │
+     ▼
 Task Control Block
-     |
-     +---> Task metadata
-     |     task id, priority, state, sleep_ticks, slice_ticks_used
-     |
-     +---> Stack
-     |     stack memory, stack size, stack pointer
-     |
-     +---> CPUContext
-           R0–R12, LR, PC, xPSR
+     │
+     ├──▶ Task metadata  (task id, priority, state, sleep_ticks, slice_ticks_used)
+     ├──▶ Stack          (stack_memory, stack_size, stack_pointer)
+     └──▶ CPUContext     (R0–R12, LR, PC, xPSR)
 
 Timer Module (per tick)
-     |
-     +---> [1] timer_tick()          — advance g_kernel_tick
-     |
-     +---> [2] timer_update_sleep()  — decrement each sleeping task's
-                                       sleep_ticks; wake tasks that have
-                                       reached zero
+     │
+     ├──▶ [1] timer_tick()           — advance g_kernel_tick
+     ├──▶ [2] timer_update_sleep()   — decrement sleep counters; wake expired tasks
+     └──▶ [3] timer_update_soft()    — decrement & fire armed software timers
 
 Scheduler (per tick, after timer)
-     |
-     +---> [3] Peek best READY task  — scan ready queue for highest priority
-     |
-     +---> [4] Decision (see below)
-     |
-     +---> [5] Context Switch        — context_switch() atomically saves
-     |                                 outgoing and loads incoming in one call
-     |
-     +---> [6] Task Running          — task function is called cooperatively
+     │
+     ├──▶ Peek best READY task
+     ├──▶ Preemption decision (priority / slice / forced / continue)
+     └──▶ do_context_switch()  ──▶  task_function()
 
 Memory Pool (available at any time after rtos_init)
-     |
-     +---> memory_alloc()    — pop from free list, O(1)
-     |
-     +---> memory_free()     — push to free list, O(1), double-free safe
+     │
+     ├──▶ memory_alloc()    — pop from free list, O(1)
+     └──▶ memory_free()     — push to free list, O(1), double-free safe
+
+Event Flags (available at any time after event_flags_init)
+     │
+     ├──▶ event_flags_set()   — OR mask into flags; wake matching waiters
+     ├──▶ event_flags_clear() — AND-NOT mask from flags
+     └──▶ event_flags_wait()  — immediate return (true) or block (false)
+```
+
+## Software Timers (v1.9)
+
+Software timers are statically allocated kernel objects that fire a callback
+function when their countdown expires.  They are driven by the existing kernel
+tick in `timer_update_soft()`, which is called automatically at the end of
+`timer_update_sleep()` — no scheduler changes are required.
+
+### Timer Modes
+
+| Mode | Behaviour |
+|------|-----------|
+| `TIMER_ONE_SHOT` | Fires once, then automatically disarms |
+| `TIMER_PERIODIC` | Fires every `period_ticks` ticks, auto-reloads |
+
+### Software Timer Lifecycle
+
+```text
+timer_soft_create()   → allocate slot, configure (NOT yet running)
+       │
+timer_soft_start()    → set remaining = period_ticks, active = true
+       │
+  [tick N arrives]
+       │
+timer_update_soft()   → remaining--
+       │
+  remaining == 0?
+       ├─ YES → callback(arg) fires
+       │          ├─ ONE_SHOT: active = false  (auto-disarm)
+       │          └─ PERIODIC: remaining = period_ticks  (auto-reload)
+       └─ NO  → wait
+       │
+timer_soft_stop()     → active = false (slot still allocated)
+timer_soft_delete()   → active = false, in_use = false (slot returned to pool)
+```
+
+### Per-expiry log sequence
+
+```text
+[HH:MM] Timer Expired  : <name> (mode=PERIODIC|ONE_SHOT)
+[HH:MM] Timer Callback : <name> executing
+[HH:MM] Timer Callback : <name> done
+[HH:MM] Timer Reload   : <name> (next in N ticks)   ← PERIODIC only
+[HH:MM] Timer Stopped  : <name> (one-shot complete) ← ONE_SHOT only
+```
+
+### Example usage
+
+```c
+static void heartbeat_cb(void *arg) {
+    uart_log("Heartbeat ping");
+}
+
+SoftTimer *hb = timer_soft_create("heartbeat", TIMER_PERIODIC, 5, heartbeat_cb, NULL);
+timer_soft_start(hb);
+/* fires every 5 ticks until timer_soft_stop(hb) or timer_soft_delete(hb) */
+```
+
+## Event Flags (v1.9)
+
+Event flags provide bitmask-based task synchronisation.  A 32-bit `flags`
+field allows up to 32 independent boolean signals per `EventFlags` object.
+
+### Blocking model
+
+`event_flags_wait()` tests the requested bits immediately:
+
+- **Bits already set** → clear them (auto-reset) and return `true`.  Task continues.
+- **Bits not yet set** → record the task in the waiter table, block it
+  (`BLOCK_EVENT`), and return `false`.  The caller must return from the task
+  function immediately; it is rescheduled when `event_flags_set()` satisfies
+  its mask.
+
+`event_flags_set()` scans the waiter table after updating the flags and wakes
+every task whose `required_mask` is now a subset of the current flags.
+
+### Auto-reset semantics
+
+When a wait is satisfied (either immediately or via `event_flags_set()`), the
+bits that were waited on are cleared from the `EventFlags.flags` field.  This
+prevents a second waiter from seeing the same event without the producer
+explicitly re-setting it.
+
+### Event flags state diagram
+
+```text
+Producer task            EventFlags object           Consumer task
+──────────               ─────────────────           ─────────────
+event_flags_set(mask) ──▶  flags |= mask
+                            scan waiters
+                            waiter.mask ⊆ flags?
+                              YES ──▶ flags &= ~mask ──▶ scheduler_set_task_state(READY)
+                              NO  ──▶ skip
+
+                                                      event_flags_wait(mask)
+                                                        flags & mask == mask?
+                                                          YES ──▶ flags &= ~mask; return true
+                                                          NO  ──▶ record waiter; BLOCK_EVENT; return false
+```
+
+### Example usage
+
+```c
+static EventFlags data_ready_event;
+
+/* Producer (e.g. sensor task or timer callback) */
+event_flags_set(&data_ready_event, 0x01u);
+
+/* Consumer */
+if (!event_flags_wait(&data_ready_event, 0x01u)) {
+    return;   /* blocked; will retry on next scheduling */
+}
+/* process data */
+```
+
+## Module Interaction (v1.9)
+
+```text
+rtos_init()
+  ├─▶ scheduler_init()  ──▶ timer_init()     [binds TCB array, resets tick + soft-timer pool]
+  └─▶ memory_init()                          [builds free list, clears bitmap]
+
+Application startup:
+  event_flags_init(&ef)                      [zero flags, empty waiter table]
+  t = timer_soft_create(…)                   [claim timer slot]
+  timer_soft_start(t)                        [arm timer]
+
+rtos_run() ──▶ scheduler_run() [per cycle]:
+  1. timer_tick()                ← advance g_kernel_tick
+  2. timer_update_sleep()
+       ├─ expire sleeping tasks (BLOCK_SLEEP → TASK_READY)
+       └─ timer_update_soft()   ← decrement & fire soft timers (calls callbacks)
+                                   callback may call event_flags_set() to wake waiters
+  3. peek_highest_priority()     ← identify best READY task
+  4. Preemption decision:
+       Forced switch?    → do_context_switch()  (current task BLOCKED/SUSPENDED)
+       Priority preempt? → re-queue current → do_context_switch()
+       Slice expired?    → re-queue current → do_context_switch()
+       Continue?         → run current task in-place
+  5. task_function()             ← cooperative task body runs
+       may call:
+         event_flags_wait()      → BLOCK_EVENT if flags not satisfied
+         event_flags_set()       → wake matching waiters
+         memory_alloc/free()     → pool allocation
+         rtos_task_sleep()       → BLOCK_SLEEP
+
+event_flags_set(ef, mask)
+  ├─ ef->flags |= mask
+  └─ for each waiter: (ef->flags & waiter.mask) == waiter.mask?
+       YES → ef->flags &= ~waiter.mask; scheduler_set_task_state(READY)
+
+event_flags_wait(ef, mask)
+  ├─ (ef->flags & mask) == mask? → ef->flags &= ~mask; return true
+  └─ else: record (task_index, mask); scheduler_set_current_task_state(BLOCKED, BLOCK_EVENT); return false
 ```
 
 ## Memory Pool Architecture (v1.8)
 
-### Pool Layout
+The pool is a 2-D static array `g_pool_storage[RTOS_POOL_BLOCK_COUNT][RTOS_POOL_BLOCK_SIZE]`.
+Free blocks are chained via an embedded free list (no separate metadata array).
+A parallel `uint8_t g_pool_allocated[]` bitmap provides O(1) double-free detection.
 
-The pool is a 2-D static array of `uint8_t`:
+| Operation | Time Complexity |
+|-----------|----------------|
+| `memory_alloc()` | O(1) — pop head of free list |
+| `memory_free()` | O(1) — validate + push to head |
+| `memory_available_blocks()` | O(1) — pre-maintained counter |
 
-```text
-g_pool_storage[RTOS_POOL_BLOCK_COUNT][RTOS_POOL_BLOCK_SIZE]
+## Preemptive Scheduling Algorithm (v1.7)
 
-  Block 0   Block 1   Block 2   ...   Block N-1
- ┌────────┬─────────┬─────────┬─────┬──────────┐
- │BLOCK   │ BLOCK   │ BLOCK   │     │  BLOCK   │
- │SIZE    │ SIZE    │ SIZE    │ ... │  SIZE    │
- │ bytes  │ bytes   │ bytes   │     │  bytes   │
- └────────┴─────────┴─────────┴─────┴──────────┘
-
-Total pool memory = RTOS_POOL_BLOCK_SIZE × RTOS_POOL_BLOCK_COUNT bytes
-```
-
-### Embedded Free List
-
-Free blocks are chained intrinsically — the first `sizeof(int)` bytes of
-each free block store the index of the next free block.  No separate linked
-list or metadata array is needed.
-
-```text
-After memory_init():
-
- g_free_list_head = 0
-
-  Block 0       Block 1       Block 2       Block 3
- ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
- │ next = 1 │→ │ next = 2 │→ │ next = 3 │→ │ next = -1│ (END)
- └──────────┘  └──────────┘  └──────────┘  └──────────┘
-
-After memory_alloc() (returns Block 0):
-
- g_free_list_head = 1
-
-  Block 0       Block 1       Block 2       Block 3
- ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
- │[in use]  │  │ next = 2 │→ │ next = 3 │→ │ next = -1│
- └──────────┘  └──────────┘  └──────────┘  └──────────┘
-
-After memory_free(Block 0) (prepend back to head):
-
- g_free_list_head = 0
-
-  Block 0       Block 1       Block 2       Block 3
- ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
- │ next = 1 │→ │ next = 2 │→ │ next = 3 │→ │ next = -1│
- └──────────┘  └──────────┘  └──────────┘  └──────────┘
-```
-
-### Allocation Strategy
-
-| Operation | Time Complexity | Description |
-|-----------|----------------|-------------|
-| `memory_alloc()` | O(1) | Pop head of free list; set bitmap[idx] = 1 |
-| `memory_free()` | O(1) | Validate via bitmap; push to head; set bitmap[idx] = 0 |
-| `memory_available_blocks()` | O(1) | Return pre-maintained counter |
-
-### Double-Free Protection
-
-A parallel `uint8_t g_pool_allocated[RTOS_POOL_BLOCK_COUNT]` bitmap records
-allocation state independently of the free-list links:
-
-- `g_pool_allocated[i] == 1` → block i is live.
-- `g_pool_allocated[i] == 0` → block i is free.
-
-`memory_free()` checks the bitmap before modifying the list.  If the block is
-already free, it logs an error and returns without corrupting the list.
-
-### Advantages over Dynamic Heap Allocation
-
-| Property | Heap (malloc/free) | Memory Pool |
-|----------|--------------------|-------------|
-| Allocation time | O(n) worst case (best-fit scan) | O(1) always |
-| Deallocation time | O(n) worst case (coalesce) | O(1) always |
-| Fragmentation | External + internal | None (fixed size) |
-| Double-free safety | Undefined behaviour | Detected & logged |
-| Static footprint | Hidden (OS-managed) | Fully visible at link time |
-| ISR-safe | No (system call) | Yes (no blocking) |
-| MISRA-C compliant | No (dynamic allocation forbidden) | Yes |
+| Case | Condition | Log tag |
+|------|-----------|---------|
+| First tick | No current task | `[First tick]` |
+| Forced switch | Current task is BLOCKED/SUSPENDED | `[Forced switch]` |
+| Priority preemption | `best.priority > current.priority` | `[Preempted]` |
+| Time-slice expiry | Equal priority, `slice_ticks_used >= RTOS_TIME_SLICE_TICKS` | `[Slice expired]` |
+| Continue | All other cases | `Continue` |
 
 ## Configuration
 
@@ -176,114 +256,66 @@ already free, it logs an error and returns without corrupting the list.
 | `RTOS_TIME_SLICE_TICKS` | 1 | Ticks before equal-priority preemption |
 | `RTOS_POOL_BLOCK_SIZE` | 32 | Memory pool block size in bytes |
 | `RTOS_POOL_BLOCK_COUNT` | 16 | Number of blocks in the memory pool |
+| `RTOS_SOFT_TIMER_COUNT` | 8 | Maximum simultaneous software timers |
+| `RTOS_EVENT_MAX_WAITERS` | 8 | Maximum waiters per EventFlags object |
 
-## Module Interaction (v1.8)
+## API Reference
 
-```text
-rtos_init()
-  ├─► scheduler_init()  ──► timer_init()     [binds TCB array, resets tick]
-  └─► memory_init()                          [builds free list, clears bitmap]
-
-rtos_run() ──► scheduler_run() [per cycle]:
-  1. timer_tick()                ← advance g_kernel_tick
-  2. timer_update_sleep()        ← expire sleeping tasks
-  3. peek_highest_priority()     ← identify best READY task (non-destructive)
-  4. Preemption decision:
-       Forced switch?     ──► current task is BLOCKED/SUSPENDED → do_context_switch()
-       Priority preempt?  ──► re-queue outgoing ──► do_context_switch()
-       Slice expired?     ──► re-queue outgoing ──► do_context_switch()
-       Continue?          ──► run current task directly (no context switch)
-  5. do_context_switch()         ← context_switch() or context_restore()
-                                   + task_function() call
-
-memory_alloc()   ← callable from any task at any time after rtos_init()
-memory_free()    ← callable from any task; validates block and bitmap before returning
-
-rtos_task_sleep(n)
-  └─► sets TCB.sleep_ticks = n
-  └─► scheduler_set_current_task_state(BLOCKED, BLOCK_SLEEP)
-
-timer_update_sleep()
-  └─► scheduler_set_task_state(TASK_READY) when sleep_ticks reaches 0
-
-scheduler_unblock_one(reason)
-  └─► called by rtos_sem_signal(), rtos_mutex_unlock(), rtos_queue_send/receive()
-  └─► scheduler_set_task_state(TASK_READY) for the highest-priority waiter
-```
-
-## Preemptive Scheduling Algorithm (v1.7)
-
-At the start of each scheduler cycle, after advancing the tick and waking
-sleeping tasks, the scheduler makes one of five decisions:
-
-| Case | Condition | Action | Log tag |
-|------|-----------|--------|---------|
-| **First tick** | No current task exists | Switch to best READY task | `[First tick]` |
-| **Forced switch** | Current task is BLOCKED or SUSPENDED | Switch to best READY task without re-queuing | `[Forced switch]` |
-| **Priority preemption** | `best.priority > current.priority` | Immediately switch to the higher-priority task | `[Preempted]` |
-| **Time-slice expiry** | `best.priority == current.priority` AND `slice_ticks_used >= RTOS_TIME_SLICE_TICKS` | Rotate to the next equal-priority task | `[Slice expired]` |
-| **Continue** | All other cases | Current task runs for another tick | `Continue` |
-
-### Key properties
-
-- **No unnecessary context switches.** If the current task is still the best
-  candidate and its slice has not expired, it continues without any context
-  save/restore overhead.
-- **Priority always wins.** A higher-priority task that becomes READY (e.g.
-  by being woken from sleep) immediately preempts the current task on the
-  very next tick.
-- **Equal-priority fairness.** When multiple tasks share the same priority,
-  they are rotated on a configurable time slice (`RTOS_TIME_SLICE_TICKS`,
-  default 1 tick for strict round-robin).
-
-## Timer Module (v1.6)
+### Kernel Tick
 
 | Function | Description |
 |----------|-------------|
-| `timer_init(tasks, task_count)` | Reset `g_kernel_tick` to zero and bind the shared TCB array. |
-| `timer_tick()` | Advance the kernel tick by one unit per cycle. |
-| `timer_now()` | Return the current tick (used for logging and scheduling). |
-| `timer_update_sleep()` | Decrement sleep counters; wake tasks whose counter reaches zero. |
+| `timer_init(tasks, n)` | Reset tick, clear soft-timer pool, bind task list |
+| `timer_tick()` | Advance kernel tick by one (scheduler use only) |
+| `timer_now()` | Return current kernel tick |
+| `timer_update_sleep()` | Expire sleepers + fire soft timers (scheduler use only) |
 
-## Memory Pool API (v1.8)
+### Software Timers
 
 | Function | Description |
 |----------|-------------|
-| `memory_init()` | Initialise pool: build free list, clear bitmap. Called from `rtos_init()`. |
-| `memory_alloc()` | Allocate one block (O(1)); returns `NULL` on exhaustion. |
-| `memory_free(ptr)` | Return a block to the pool (O(1)); validates pointer and double-free. |
-| `memory_available_blocks()` | Return count of free blocks remaining. |
+| `timer_soft_create(name, mode, period, cb, arg)` | Allocate timer slot |
+| `timer_soft_start(timer)` | Arm / restart timer |
+| `timer_soft_stop(timer)` | Disarm timer (slot kept) |
+| `timer_soft_delete(timer)` | Disarm and release slot |
+
+### Event Flags
+
+| Function | Description |
+|----------|-------------|
+| `event_flags_init(ef)` | Initialise to zero, empty waiter table |
+| `event_flags_set(ef, mask)` | OR mask into flags; wake matching waiters |
+| `event_flags_clear(ef, mask)` | AND-NOT mask from flags |
+| `event_flags_wait(ef, mask)` | Return true immediately or block task |
+| `event_flags_get(ef)` | Read flags without blocking |
+
+### Memory Pool
+
+| Function | Description |
+|----------|-------------|
+| `memory_init()` | Build free list, clear bitmap |
+| `memory_alloc()` | Allocate one block (O(1)); NULL on exhaustion |
+| `memory_free(ptr)` | Return block; validates pointer and double-free |
+| `memory_available_blocks()` | Return free block count |
 
 ## Project Map
 
 ```text
 include/context.h    CPU context model API + context_switch() declaration
+include/event.h      Event flags API (EventFlags, EventWaiter types + 5 functions)
 include/memory.h     Fixed-size memory pool API and design documentation
 include/rtos.h       Public kernel API, data structures, configuration macros
-include/scheduler.h  Internal scheduler module API
-include/timer.h      Kernel tick and sleep management API
-src/context.c        context_init, context_save, context_restore,
-                     context_copy, context_active, context_switch
-src/memory.c         Embedded free-list allocator, double-free protection,
-                     O(1) memory_alloc / memory_free
+include/scheduler.h  Internal scheduler module API (including scheduler_current_task_index)
+include/timer.h      Kernel tick, sleep management, software timer API
+src/context.c        context_init, context_save, context_restore, context_switch
+src/event.c          EventFlags implementation: set/clear/wait/get, waiter table, BLOCK_EVENT
+src/memory.c         Embedded free-list allocator, double-free protection
 src/rtos.c           Task lifecycle, sync primitives, message queue, logging
-src/scheduler.c      Ready queue, preemptive priority selection, time-slice
-                     round-robin, six-phase context-switch dispatch
-src/timer.c          Kernel tick counter, sleep countdown, wake-up logic
+src/scheduler.c      Ready queue, preemptive priority, time-slice, scheduler_current_task_index
+src/timer.c          Kernel tick, sleep countdown, software timer pool, timer_update_soft
 src/main.c           Demo application using sensor/logger/display tasks
 tests/               Focused simulator behaviour tests
 Makefile             Build commands
-```
-
-## Example Log — Memory Pool
-
-```text
-[00:00] Memory Pool Init: 16 blocks x 32 bytes = 512 bytes total
-[00:01] Memory Alloc: block 0 @ 0x... (15/16 blocks free)
-[00:01] Memory Alloc: block 1 @ 0x... (14/16 blocks free)
-[00:02] Memory Free: block 0 @ 0x... (15/16 blocks free)
-[00:03] Memory Alloc FAILED: pool exhausted (0/16 blocks free)
-[00:04] Memory Free ERROR: double-free detected on block 1 @ 0x...
 ```
 
 ## Suggested Next Milestones
@@ -293,4 +325,4 @@ Makefile             Build commands
 3. Port the scheduler tick to a hardware timer interrupt.
 4. Map task stacks to real memory regions on STM32 or ESP32.
 5. Add a watchdog tick that terminates tasks exceeding a deadline.
-6. Add a variable-size memory pool using a buddy allocator or slab allocator.
+6. Extend event flags with AND/OR wait modes and timeout support.

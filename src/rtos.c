@@ -3,6 +3,7 @@
 #include "scheduler.h"
 #include "timer.h"
 #include "memory.h"
+#include "event.h"
 
 #include <stdarg.h>
 #include <stdio.h>

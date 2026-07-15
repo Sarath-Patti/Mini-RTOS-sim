@@ -2,8 +2,8 @@ CC := gcc
 CFLAGS := -std=c99 -Wall -Wextra -Wpedantic -Iinclude
 TARGET := mini_rtos
 TEST_TARGET := test_states
-SRCS := src/main.c src/rtos.c src/scheduler.c src/context.c src/timer.c src/memory.c
-TEST_SRCS := tests/test_states.c src/rtos.c src/scheduler.c src/context.c src/timer.c src/memory.c
+SRCS := src/main.c src/rtos.c src/scheduler.c src/context.c src/timer.c src/memory.c src/event.c
+TEST_SRCS := tests/test_states.c src/rtos.c src/scheduler.c src/context.c src/timer.c src/memory.c src/event.c
 
 .PHONY: all run test clean
 

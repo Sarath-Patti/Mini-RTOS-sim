@@ -9,5 +9,6 @@ void scheduler_set_task_state(int task_index, TaskState state, BlockReason reaso
 void scheduler_set_current_task_state(TaskState state, BlockReason reason);
 void scheduler_unblock_one(BlockReason reason);
 int  scheduler_ready_count(void);
+int  scheduler_current_task_index(void);   /* returns -1 when no task runs */
 
 #endif

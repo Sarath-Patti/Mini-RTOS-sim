@@ -496,3 +496,12 @@ int scheduler_ready_count(void)
 {
     return ready_count;
 }
+
+int scheduler_current_task_index(void)
+{
+    if (current_task_index == NULL) {
+        return -1;
+    }
+
+    return *current_task_index;
+}
