@@ -23,82 +23,86 @@
 2. [Motivation](#motivation)
 3. [Key Features](#key-features)
 4. [Architecture Overview](#architecture-overview)
-5. [Module Responsibilities](#module-responsibilities)
-6. [Repository Structure](#repository-structure)
-7. [Build Instructions](#build-instructions)
-8. [Running the Demo](#running-the-demo)
-9. [Running Tests](#running-tests)
-10. [Example Output](#example-output)
-11. [Project Evolution](#project-evolution)
-12. [Current RTOS Capabilities](#current-rtos-capabilities)
-13. [Design Decisions](#design-decisions)
-14. [Configuration Reference](#configuration-reference)
-15. [Future Improvements](#future-improvements)
-16. [Contributing](#contributing)
-17. [License](#license)
+5. [Scheduling Workflow](#scheduling-workflow)
+6. [Software Context Switching (CPU Context Simulation)](#software-context-switching-cpu-context-simulation)
+7. [Simulation Scope](#simulation-scope)
+8. [Module Responsibilities](#module-responsibilities)
+9. [Repository Structure](#repository-structure)
+10. [Build Instructions](#build-instructions)
+11. [Running the Demo](#running-the-demo)
+12. [Running Tests](#running-tests)
+13. [Example Output](#example-output)
+14. [Project Evolution](#project-evolution)
+15. [Current RTOS Capabilities](#current-rtos-capabilities)
+16. [Design Decisions](#design-decisions)
+17. [Configuration Reference](#configuration-reference)
+18. [Future Improvements](#future-improvements)
+19. [Contributing](#contributing)
+20. [License](#license)
 
 ---
 
 ## Project Overview
 
-Mini RTOS Simulator is a fully self-contained, host-runnable RTOS kernel
-implemented in portable C99.  It models the essential services of a
-production-grade embedded RTOS — task management, preemptive scheduling,
-software context switching, inter-task synchronisation, memory management, and
-software timers — without relying on any hardware, OS threads, or
-platform-specific code.
+Mini RTOS Simulator is a fully self-contained, host-runnable RTOS kernel implemented in portable C99. It models the essential services of a production-grade embedded RTOS — task management, preemptive priority scheduling, software context switching, inter-task synchronisation, memory management, and software timers — without relying on any hardware, OS threads, or platform-specific code.
 
-The project is designed to be read, understood, and extended one milestone at a
-time.  Every module has a single, clearly documented responsibility.  The
-complete kernel builds with `gcc -std=c99` and produces no warnings even under
-`-Wall -Wextra -Wpedantic`.
+The project is designed to be read, understood, and extended one milestone at a time. Every module has a single, clearly documented responsibility. The complete kernel builds with `gcc -std=c99` and produces no warnings even under `-Wall -Wextra -Wpedantic`.
 
 ---
 
 ## Motivation
 
-Most embedded RTOS textbooks and tutorials jump immediately to Cortex-M
-assembly, hardware timers, and linker scripts.  This project takes the opposite
-approach: implement a complete, correct RTOS kernel entirely in portable C, run
-it on a developer laptop, verify it with a deterministic test suite, and only
-then consider porting it to silicon.
+Most embedded RTOS textbooks and tutorials jump immediately to Cortex-M assembly, hardware timers, and linker scripts. This project takes the opposite approach: implement a complete, correct RTOS kernel entirely in portable C, run it on a developer laptop, verify it with a deterministic test suite, and only then consider porting it to silicon.
 
 The goals are:
 
 - **Readable first.** Every design decision is explained in the source.
-- **Testable.** The kernel is purely cooperative and deterministic, so tests
-  are reproducible without hardware.
-- **Incremental.** Each git tag corresponds to one well-defined feature
-  milestone so the full history tells the story of how an RTOS is built.
-- **Port-ready.** The Cortex-M register layout, EXC_RETURN values, and NVIC
-  conventions are already present in the context model.
+- **Testable.** Kernel execution and tick simulation are purely deterministic software operations, so tests are reproducible without hardware.
+- **Incremental.** Each git tag corresponds to one well-defined feature milestone so the full history tells the story of how an RTOS is built.
+- **Port-ready.** The Cortex-M register layout, EXC_RETURN values, and NVIC conventions are modeled in the context structure.
 
 ---
 
 ## Key Features
 
-| Feature | Status |
-|---------|--------|
-| Task Control Blocks with priority, state, and stack | ✅ |
-| READY / RUNNING / BLOCKED / SUSPENDED states | ✅ |
-| Per-task private stack (configurable size) | ✅ |
-| Cortex-M CPU context model (R0–R12, LR, PC, xPSR) | ✅ |
-| Software context switch (save / restore / switch) | ✅ |
-| Preemptive priority scheduler | ✅ |
-| Time-slice round-robin for equal-priority tasks | ✅ |
-| Kernel tick counter and sleep management | ✅ |
-| Software timers (one-shot and periodic) | ✅ |
-| Counting semaphore | ✅ |
-| Mutex with owner tracking | ✅ |
-| Fixed-size integer message queue | ✅ |
-| Fixed-size memory pool allocator (O(1), no fragmentation) | ✅ |
-| Event flags (32-bit bitmask, auto-reset) | ✅ |
-| UART-style timestamped debug logging | ✅ |
-| Portable C99, zero platform dependencies | ✅ |
+✔ **Priority-based preemptive scheduling** — Highest-priority READY task always executes  
+✔ **Round-robin scheduling** — Equal-priority tasks rotate fairly based on configurable time slices  
+✔ **Task Control Blocks (TCBs)** — Complete task state, priority, sleep countdown, and stack pointers  
+✔ **Ready queue management** — Static ready queue tracking runnable tasks  
+✔ **Software context switching** — Simulated CPU context save and restore per task  
+✔ **Kernel tick simulation** — Monotonic tick-driven scheduler and sleep management  
+✔ **Software timers** — One-shot and periodic timer callbacks  
+✔ **Mutexes** — Priority-capable binary locks with owner tracking  
+✔ **Semaphores** — Counting semaphores for task synchronization  
+✔ **Message queues** — Fixed-capacity FIFO queues for inter-task communication  
+✔ **Event flags** — 32-bit bitmask event synchronization with auto-reset  
+✔ **Deterministic memory pool allocator** — O(1) allocation/deallocation with double-free protection  
+✔ **Static task allocation** — No dynamic heap memory (`malloc`/`free`)  
+✔ **Modular kernel architecture** — Clean separation of scheduler, context, timer, memory, and event modules  
+✔ **Comprehensive unit test suite** — Deterministic test suite validating task states, context ownership, and stacks  
 
 ---
 
 ## Architecture Overview
+
+```text
+                Application Tasks
+                        │
+                        ▼
+                 RTOS Kernel API (rtos.c / rtos.h)
+                        │
+        ┌───────────────┼───────────────┐
+        │               │               │
+    Scheduler      Context Manager   Timer Manager
+   (scheduler.c)     (context.c)       (timer.c)
+        │               │               │
+        ├───────────────┼───────────────┤
+        │               │               │
+ Synchronisation   Memory Manager     Event Manager
+ (Mutex/Sem/Queue)   (memory.c)        (event.c)
+```
+
+### Detailed Kernel Module Interaction
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -118,89 +122,67 @@ The goals are:
 │ Priority sel │  │ Sleep mgmt     │  │ Free list O(1)   Waiter table  │
 │ Time slicing │  │ Soft timers    │  │ Double-free det  BLOCK_EVENT   │
 │ Context disp │  │                │  │                                 │
-└───────┬──────┘  └────────────────┘  └─────────────────────────────── ┘
+└───────┬──────┘  └────────────────┘  └───────────────────────────────┘
         │ context_switch()
 ┌───────▼──────────────────┐
-│       context.c           │
+│       context.c          │
 │  CPUContext (R0–xPSR)    │
-│  save / restore / switch  │
+│  save / restore / switch │
 └──────────────────────────┘
 ```
 
-### Scheduler Interaction (per kernel tick)
+---
 
-```text
-scheduler_run() [one cycle]
-        │
-        ├─[1]─ timer_tick()              advance g_kernel_tick
-        │
-        ├─[2]─ timer_update_sleep()
-        │         ├── expire sleepers    BLOCK_SLEEP → TASK_READY
-        │         └── timer_update_soft()
-        │               └── fire armed soft timers (callbacks)
-        │
-        ├─[3]─ peek_highest_priority()   identify best READY task (non-destructive)
-        │
-        ├─[4]─ Scheduling decision:
-        │         ┌─ No current task?    → [First tick]    do_context_switch()
-        │         ├─ Current BLOCKED?    → [Forced switch] do_context_switch()
-        │         ├─ Preempted?          → [Preempted]     do_context_switch()
-        │         ├─ Slice expired?      → [Slice expired] do_context_switch()
-        │         └─ Continue            → run current task directly
-        │
-        └─[5]─ task_function()           cooperative task body
-```
+## Scheduling Workflow
 
-### Context Switching Flow
+The scheduler (`scheduler.c`) is a tick-driven, priority-based preemptive scheduler with round-robin time slicing among equal-priority tasks. On every scheduler cycle (`scheduler_run`):
 
-```text
-do_context_switch(outgoing_idx, incoming_idx)
-        │
-        ├─[Phase 1]─ uart_log "Context Saved"
-        │
-        ├─[Phase 2]─ context_switch(&outgoing->context, &incoming->context)
-        │                 ├── context_copy(outgoing, &active_context)   ← save
-        │                 └── context_copy(&active_context, incoming)   ← restore
-        │
-        ├─[Phase 3]─ *current_task_index = incoming_idx
-        │             incoming->slice_ticks_used = 1
-        │
-        ├─[Phase 4]─ outgoing re-queued to ready queue (if still READY)
-        │
-        ├─[Phase 5]─ uart_log "Next Task" + "Context Restored"
-        │
-        └─[Phase 6]─ incoming->task_function()    ← cooperative call
-```
+1. **Kernel Tick & Timer Processing:** The kernel tick counter is advanced (`timer_tick()`), sleeping tasks are updated (`timer_update_sleep()`), and armed software timers evaluate and fire their callbacks.
+2. **Ready Queue Management & Priority Selection:** The scheduler inspects the static READY queue (`peek_highest_priority()`) to identify the highest-priority runnable task.
+3. **Preemption & Scheduling Decision:**
+   - **Higher-Priority Preemption:** If a READY task has a higher priority than the running task, it immediately preempts the current task.
+   - **Time-Slice Expiration:** If the highest-priority READY task has equal priority to the current task and the current task's time slice (`RTOS_TIME_SLICE_TICKS`) has expired, the current task yields and equal-priority tasks rotate in round-robin order.
+   - **Forced Switch:** If the current task transitions to `TASK_BLOCKED` or `TASK_SUSPENDED`, a context switch is forced to the highest-priority READY task.
+   - **Continuation:** If the current task remains runnable (`TASK_RUNNING`/`TASK_READY`), holds the highest priority, and its time slice has not expired, execution continues directly without context switch overhead.
+4. **Task State Transitions & Context Switching:** When a context switch occurs, `do_context_switch()` saves the outgoing task's simulated CPU state into its TCB (`context_save`), updates task states, restores the incoming task's saved `CPUContext` (`context_restore`), and invokes the incoming task function.
 
-### Memory Pool Layout
+---
 
-```text
- g_pool_storage[RTOS_POOL_BLOCK_COUNT][RTOS_POOL_BLOCK_SIZE]
+## Software Context Switching (CPU Context Simulation)
 
-  Block 0       Block 1       Block 2            Block N-1
- ┌──────────┐  ┌──────────┐  ┌──────────┐       ┌──────────┐
- │ next = 1 │→ │ next = 2 │→ │ next = 3 │→ ...→ │next = -1 │  (free list)
- └──────────┘  └──────────┘  └──────────┘       └──────────┘
+Context switching in the Mini RTOS Simulator is implemented entirely in software in portable C99:
 
- After memory_alloc():  head advances; bitmap[idx] = 1
- After memory_free():   block prepended to head; bitmap[idx] = 0
-                        double-free detected if bitmap[idx] == 0 already
-```
+- **TCB CPU Context Storage:** Every task owns an independent `CPUContext` structure stored inside its Task Control Block (`TCB.context`).
+- **Simulated CPU Registers:** The `CPUContext` struct simulates Cortex-M register layout (general-purpose registers `R0–R12`, link register `LR`, program counter `PC`, and status register `xPSR`).
+- **Context Save & Restore:** During a context switch, the scheduler saves the active simulated CPU state from `active_context` into the outgoing task's TCB (`context_save`), and restores the incoming task's saved state into `active_context` (`context_restore`).
+- **Software Implementation:** Context switching is performed completely in software via `context_switch()`. The project intentionally does not use architecture-specific assembly instructions (`PUSH`/`POP`), inline assembly, PendSV interrupt handlers, OS threads, setjmp/longjmp, or ucontext.
 
-### Event Flag Flow
+---
 
-```text
-event_flags_set(ef, mask)               event_flags_wait(ef, mask)
-        │                                       │
-        ├── ef->flags |= mask                   ├── (ef->flags & mask) == mask?
-        │                                       │     YES → ef->flags &= ~mask
-        └── scan waiters[]                      │            return true  (continue)
-              waiter.mask ⊆ ef->flags?          │
-                YES → ef->flags &= ~mask        └── NO  → record (task_idx, mask)
-                      scheduler_set_task_state          → BLOCK_EVENT
-                        (TASK_READY)                    → return false (blocked)
-                      compact waiter slot
-```
+## Simulation Scope
+
+This project defines a clear boundary between implemented RTOS kernel logic, simulated CPU components, and non-implemented hardware features:
+
+### Implemented
+✔ Priority-based preemptive scheduler  
+✔ Software context switching engine  
+✔ Kernel tick manager  
+✔ Software timers (one-shot and periodic)  
+✔ Synchronization primitives (Semaphores, Mutexes, Message Queues, Event Flags)  
+✔ Fixed-size deterministic memory pool allocator  
+
+### Simulated
+• CPU registers (`CPUContext` modeling `R0–R12`, `LR`, `PC`, `xPSR`)  
+• Context switching flow (software register state transfers)  
+• Timer interrupts (simulated via host-driven `timer_tick()`)  
+
+### Not Implemented
+• Hardware interrupts and vector tables  
+• ARM PendSV and SysTick hardware registers  
+• Assembly-level context switching instructions  
+• Memory Management Unit (MMU) / MPU protection  
+• Hardware device drivers  
+• Multicore / SMP scheduling  
 
 ---
 
@@ -215,8 +197,7 @@ event_flags_set(ef, mask)               event_flags_wait(ef, mask)
 | **Memory** | `memory.c` / `memory.h` | Fixed-size pool, free list, double-free protection |
 | **Event** | `event.c` / `event.h` | Event flag groups, waiter table, BLOCK_EVENT unblocking |
 
-**Dependency rule:** modules may only depend on modules listed to their right in
-the table above (or on `rtos.h` for shared types).  No circular dependencies exist.
+**Dependency rule:** modules may only depend on modules listed to their right in the table above (or on `rtos.h` for shared types). No circular dependencies exist.
 
 ---
 
@@ -301,20 +282,19 @@ make test
 ./test_states
 ```
 
-The test suite runs nine isolated test cases, each calling `rtos_init()` to
-get a clean kernel state:
+The project contains a comprehensive unit test suite in `tests/test_states.c` covering:
+- READY task execution
+- BLOCKED task skipping
+- SUSPENDED task skipping
+- Scheduler behavior & ready queue correctness
+- Round-robin rotation among multiple READY tasks
+- Private task stack allocation & non-overlap
+- Task CPU context ownership
+- Context save updating destination
+- Context restore loading expected registers
+- Memory isolation between CPU contexts
 
-| Test | Verifies |
-|------|---------|
-| READY task execution | A READY task runs when scheduled |
-| BLOCKED task skipping | A sleeping task is never selected |
-| SUSPENDED task skipping | A suspended task is never selected |
-| Multiple READY tasks | Equal-priority tasks rotate correctly |
-| Private task stack allocation | No stack overlap between tasks |
-| Private task CPU context | Each task owns an independent CPUContext |
-| Context save updates destination | `context_save` writes only to its argument |
-| Context restore loads registers | Saved values match after `context_restore` |
-| Contexts do not overwrite | Two contexts are fully independent |
+Each test function calls `rtos_init()` for clean state isolation.
 
 Expected output:
 
@@ -367,8 +347,7 @@ Mini RTOS PC Simulator
 
 ## Project Evolution
 
-Each git tag marks one completed milestone.  The repository history is the
-complete narrative of how this RTOS was built.
+Each git tag marks one completed milestone. The repository history is the complete narrative of how this RTOS was built.
 
 | Tag | Milestone | Key Addition |
 |-----|-----------|--------------|
@@ -398,12 +377,9 @@ complete narrative of how this RTOS was built.
 ### Scheduler
 
 - **Priority preemption:** the highest-priority READY task always runs.
-- **Time-slice round-robin:** equal-priority tasks share the CPU in configurable
-  tick slices (`RTOS_TIME_SLICE_TICKS`, default 1 for strict round-robin).
-- **Forced switch:** a blocked or suspended task is never allowed to continue;
-  the scheduler immediately selects the next best READY task.
-- No unnecessary context switches: if the current task is still the best
-  candidate and its slice has not expired, it runs without any save/restore.
+- **Time-slice round-robin:** equal-priority tasks share the CPU in configurable tick slices (`RTOS_TIME_SLICE_TICKS`, default 1 for strict round-robin).
+- **Forced switch:** a blocked or suspended task is never allowed to continue; the scheduler immediately selects the next best READY task.
+- No unnecessary context switches: if the current task is still the best candidate and its slice has not expired, it runs without any save/restore.
 
 ### Synchronisation
 
@@ -431,40 +407,23 @@ complete narrative of how this RTOS was built.
 
 ## Design Decisions
 
-**No dynamic memory.**  The kernel uses no `malloc`, `calloc`, `realloc`, or
-`free`.  Every data structure is statically allocated.  This matches MISRA-C
-guidelines for safety-critical embedded software.
+**No dynamic memory.** The kernel uses no `malloc`, `calloc`, `realloc`, or `free`. Every data structure is statically allocated. This matches MISRA-C guidelines for safety-critical embedded software.
 
-**Cooperative task dispatch.**  Task functions are called directly from the
-scheduler.  There are no OS threads, `setjmp`/`longjmp`, `ucontext`, assembly,
-or signals.  This makes the kernel fully portable and trivially debuggable.
+**Software task dispatch.** Task execution and context switching are managed entirely in portable C99 software. There are no OS threads, `setjmp`/`longjmp`, `ucontext`, assembly, or hardware interrupt handlers. This makes the kernel fully portable and trivially debuggable.
 
-**Single active context register.**  `context.c` maintains one `active_context`
-struct.  `context_switch()` copies the outgoing task's fields into this struct
-and copies the incoming task's fields out.  The host PC/LR values are
-therefore accurate Cortex-M-style values (EXC_RETURN in LR, Thumb bit in PC).
+**Single active context register.** `context.c` maintains one `active_context` struct. `context_switch()` copies the outgoing task's fields into this struct and copies the incoming task's fields out. The host PC/LR values are therefore accurate Cortex-M-style values (EXC_RETURN in LR, Thumb bit in PC).
 
-**Embedded free list.**  The memory pool stores the next-free-block index in
-the first `sizeof(int)` bytes of every free block, using `memcpy` to avoid
-strict-aliasing violations.  No separate linked-list node is required.
+**Embedded free list.** The memory pool stores the next-free-block index in the first `sizeof(int)` bytes of every free block, using `memcpy` to avoid strict-aliasing violations. No separate linked-list node is required.
 
-**`scheduler_current_task_index()` accessor.**  Rather than exposing the
-current task index through `rtos.h` (which would blur the boundary between
-the kernel core and the scheduler), `event.c` calls a minimal scheduler
-accessor.  This keeps the dependency graph acyclic.
+**`scheduler_current_task_index()` accessor.** Rather than exposing the current task index through `rtos.h` (which would blur the boundary between the kernel core and the scheduler), `event.c` calls a minimal scheduler accessor. This keeps the dependency graph acyclic.
 
-**Auto-reset event flags.**  When `event_flags_set()` wakes a waiter, or when
-`event_flags_wait()` succeeds immediately, the satisfied bits are cleared.
-This prevents a second waiter from consuming the same event without the
-producer explicitly re-setting it, which is the correct semantics for
-edge-triggered hardware events.
+**Auto-reset event flags.** When `event_flags_set()` wakes a waiter, or when `event_flags_wait()` succeeds immediately, the satisfied bits are cleared. This prevents a second waiter from consuming the same event without the producer explicitly re-setting it, which is the correct semantics for edge-triggered hardware events.
 
 ---
 
 ## Configuration Reference
 
-All configuration macros are defined in `include/rtos.h` and can be overridden
-at compile time with `-D<MACRO>=<value>`.
+All configuration macros are defined in `include/rtos.h` and can be overridden at compile time with `-D<MACRO>=<value>`.
 
 | Macro | Default | Description |
 |-------|---------|-------------|
@@ -477,9 +436,7 @@ at compile time with `-D<MACRO>=<value>`.
 | `RTOS_POOL_BLOCK_SIZE` | `32` | Memory pool block size in bytes |
 | `RTOS_POOL_BLOCK_COUNT` | `16` | Number of blocks in the memory pool |
 
-> **Note:** `RTOS_POOL_BLOCK_SIZE` and `RTOS_POOL_BLOCK_COUNT` are defined in
-> `include/memory.h` and can be overridden independently.
-> `RTOS_EVENT_MAX_WAITERS` is defined in `include/event.h`.
+> **Note:** `RTOS_POOL_BLOCK_SIZE` and `RTOS_POOL_BLOCK_COUNT` are defined in `include/memory.h` and can be overridden independently. `RTOS_EVENT_MAX_WAITERS` is defined in `include/event.h`.
 
 ---
 
@@ -502,8 +459,7 @@ The following features are candidates for future milestones:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, coding style,
-commit message format, and pull request guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, coding style, commit message format, and pull request guidelines.
 
 ---
 
