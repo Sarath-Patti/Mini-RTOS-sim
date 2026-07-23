@@ -33,7 +33,7 @@
 12. [Running Tests](#running-tests)
 13. [Example Output](#example-output)
 14. [Project Evolution](#project-evolution)
-15. [Current RTOS Capabilities](#current-rtos-capabilities)
+15. [Implemented Kernel Services](#implemented-kernel-services)
 16. [Design Decisions](#design-decisions)
 17. [Configuration Reference](#configuration-reference)
 18. [Future Improvements](#future-improvements)
@@ -44,7 +44,7 @@
 
 ## Project Overview
 
-Mini RTOS Simulator is a fully self-contained, host-runnable RTOS kernel implemented in portable C99. It models the essential services of a production-grade embedded RTOS — task management, preemptive priority scheduling, software context switching, inter-task synchronisation, memory management, and software timers — without relying on any hardware, OS threads, or platform-specific code.
+Mini RTOS Simulator is a fully self-contained, host-runnable RTOS kernel implemented in portable C99. It models many of the core services found in production embedded RTOS kernels—including task management, priority-based scheduling, software context switching, inter-task synchronization, memory management, and software timers—while remaining entirely host-runnable and implemented in portable C99.
 
 The project is designed to be read, understood, and extended one milestone at a time. Every module has a single, clearly documented responsibility. The complete kernel builds with `gcc -std=c99` and produces no warnings even under `-Wall -Wextra -Wpedantic`.
 
@@ -52,14 +52,14 @@ The project is designed to be read, understood, and extended one milestone at a 
 
 ## Motivation
 
-Most embedded RTOS textbooks and tutorials jump immediately to Cortex-M assembly, hardware timers, and linker scripts. This project takes the opposite approach: implement a complete, correct RTOS kernel entirely in portable C, run it on a developer laptop, verify it with a deterministic test suite, and only then consider porting it to silicon.
+Most embedded RTOS textbooks and tutorials jump immediately to Cortex-M assembly, hardware timers, and linker scripts. This project takes the opposite approach: implement a feature-complete educational RTOS kernel entirely in portable C, run it on a developer laptop, verify it with a deterministic test suite, and only then consider porting it to silicon.
 
 The goals are:
 
 - **Readable first.** Every design decision is explained in the source.
 - **Testable.** Kernel execution and tick simulation are purely deterministic software operations, so tests are reproducible without hardware.
 - **Incremental.** Each git tag corresponds to one well-defined feature milestone so the full history tells the story of how an RTOS is built.
-- **Port-ready.** The Cortex-M register layout, EXC_RETURN values, and NVIC conventions are modeled in the context structure.
+- **Portability-oriented.** The simulated CPU context follows a Cortex-M-inspired register layout, making the design easier to understand and adapt to embedded targets.
 
 ---
 
@@ -72,7 +72,7 @@ The goals are:
 ✔ **Software context switching** — Simulated CPU context save and restore per task  
 ✔ **Kernel tick simulation** — Monotonic tick-driven scheduler and sleep management  
 ✔ **Software timers** — One-shot and periodic timer callbacks  
-✔ **Mutexes** — Priority-capable binary locks with owner tracking  
+✔ **Mutexes** — Owner-tracked non-recursive mutexes  
 ✔ **Semaphores** — Counting semaphores for task synchronization  
 ✔ **Message queues** — Fixed-capacity FIFO queues for inter-task communication  
 ✔ **Event flags** — 32-bit bitmask event synchronization with auto-reset  
@@ -154,7 +154,7 @@ Context switching in the Mini RTOS Simulator is implemented entirely in software
 
 - **TCB CPU Context Storage:** Every task owns an independent `CPUContext` structure stored inside its Task Control Block (`TCB.context`).
 - **Simulated CPU Registers:** The `CPUContext` struct simulates Cortex-M register layout (general-purpose registers `R0–R12`, link register `LR`, program counter `PC`, and status register `xPSR`).
-- **Context Save & Restore:** During a context switch, the scheduler saves the active simulated CPU state from `active_context` into the outgoing task's TCB (`context_save`), and restores the incoming task's saved state into `active_context` (`context_restore`).
+- **Context Save & Restore:** The scheduler copies the simulated CPU register state from the active context into the outgoing task's `CPUContext`, then restores the incoming task's saved `CPUContext` before execution continues.
 - **Software Implementation:** Context switching is performed completely in software via `context_switch()`. The project intentionally does not use architecture-specific assembly instructions (`PUSH`/`POP`), inline assembly, PendSV interrupt handlers, OS threads, setjmp/longjmp, or ucontext.
 
 ---
@@ -365,7 +365,7 @@ Each git tag marks one completed milestone. The repository history is the comple
 
 ---
 
-## Current RTOS Capabilities
+## Implemented Kernel Services
 
 ### Task Management
 
@@ -411,7 +411,7 @@ Each git tag marks one completed milestone. The repository history is the comple
 
 **Software task dispatch.** Task execution and context switching are managed entirely in portable C99 software. There are no OS threads, `setjmp`/`longjmp`, `ucontext`, assembly, or hardware interrupt handlers. This makes the kernel fully portable and trivially debuggable.
 
-**Single active context register.** `context.c` maintains one `active_context` struct. `context_switch()` copies the outgoing task's fields into this struct and copies the incoming task's fields out. The host PC/LR values are therefore accurate Cortex-M-style values (EXC_RETURN in LR, Thumb bit in PC).
+**Single active context register.** `context.c` maintains one `active_context` struct. `context_switch()` copies the outgoing task's fields into this struct and copies the incoming task's fields out. The simulated CPU context follows a Cortex-M-inspired register layout, including fields corresponding to LR, PC, and xPSR.
 
 **Embedded free list.** The memory pool stores the next-free-block index in the first `sizeof(int)` bytes of every free block, using `memcpy` to avoid strict-aliasing violations. No separate linked-list node is required.
 
